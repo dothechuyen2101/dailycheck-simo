@@ -1,0 +1,23 @@
+# SIMO Daily Check – Python Dependencies
+# Cài đặt: pip install -r requirements.txt
+
+# SSH Connectivity
+paramiko>=3.4.0
+
+# Task Scheduling
+APScheduler>=3.10.4
+
+# Web Dashboard
+Flask>=3.0.0
+
+# Config Management
+PyYAML>=6.0.1
+
+# Oracle DB (tuỳ chọn – cài nếu dùng cx_Oracle trực tiếp thay SSH sqlplus)
+# oracledb>=2.3.0
+
+# MongoDB (tuỳ chọn – cài nếu kết nối MongoDB trực tiếp)
+# pymongo>=4.8.0
+
+# Utilities
+python-dateutil>=2.9.0

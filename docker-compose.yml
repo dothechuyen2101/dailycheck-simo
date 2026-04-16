@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  dailycheck:
+    build: .
+    image: simo-dailycheck:1.0
+    container_name: simo_dailycheck
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      # Giữ dữ liệu và log bên ngoài container
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Mount SSH key để kết nối các máy chủ
+      - ${HOME}/.ssh:/root/.ssh:ro
+      # Config thực tế (không commit lên Git)
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Tùy chọn: chạy scheduler riêng biệt (scale out)
+  # dailycheck-scheduler:
+  #   build: .
+  #   image: simo-dailycheck:1.0
+  #   container_name: simo_scheduler
+  #   restart: unless-stopped
+  #   command: python main.py --scheduler
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./logs:/app/logs
+  #     - ${HOME}/.ssh:/root/.ssh:ro
+  #     - ./config/config.yaml:/app/config/config.yaml:ro
+  #   environment:
+  #     - TZ=Asia/Ho_Chi_Minh

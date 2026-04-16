@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – SIMO Daily Check{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <h5 class="fw-bold">Dashboard Kiểm tra Đầu Ngày</h5>
+  </div>
+  <div class="col-auto">
+    {% if is_running %}
+    <button class="btn btn-secondary btn-sm" disabled>
+      <span class="spinner-border spinner-border-sm"></span> Đang chạy…
+    </button>
+    {% else %}
+    <button class="btn btn-primary btn-sm" id="triggerBtn" onclick="triggerCheck()">
+      ▶ Chạy ngay
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+{% if latest %}
+<!-- Tổng quan lần chạy gần nhất -->
+<div class="row g-3 mb-4">
+  {% set color_map = {'OK':'success','WARNING':'warning','CRITICAL':'danger','ERROR':'secondary'} %}
+  {% set status = latest.overall_status %}
+  <div class="col-12">
+    <div class="card border-{{ color_map.get(status,'secondary') }} border-2">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <h6 class="text-muted mb-1">Lần chạy gần nhất</h6>
+            <span class="badge bg-{{ color_map.get(status,'secondary') }} fs-6">{{ status }}</span>
+            <small class="ms-2 text-muted">{{ latest.started_at[:19].replace('T',' ') }}</small>
+          </div>
+          <a href="/run/{{ latest.run_id }}" class="btn btn-outline-secondary btn-sm">Chi tiết</a>
+        </div>
+        <div class="row mt-3 text-center">
+          <div class="col"><div class="fw-bold fs-4">{{ latest.total_checks }}</div><small class="text-muted">Tổng</small></div>
+          <div class="col"><div class="fw-bold fs-4 text-success">{{ latest.ok_count }}</div><small class="text-muted">OK</small></div>
+          <div class="col"><div class="fw-bold fs-4 text-warning">{{ latest.warning_count }}</div><small class="text-muted">Warning</small></div>
+          <div class="col"><div class="fw-bold fs-4 text-danger">{{ latest.critical_count }}</div><small class="text-muted">Critical</small></div>
+          <div class="col"><div class="fw-bold fs-4 text-secondary">{{ latest.error_count }}</div><small class="text-muted">Error</small></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Kết quả chi tiết lần chạy gần nhất -->
+{% if latest_results %}
+<div class="card mb-4">
+  <div class="card-header fw-bold">Kết quả kiểm tra</div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead class="table-dark">
+        <tr><th>Hệ thống</th><th>Host</th><th>Kiểm tra</th><th>Trạng thái</th><th>Chi tiết</th></tr>
+      </thead>
+      <tbody>
+        {% for r in latest_results %}
+        <tr>
+          <td>{{ r.system }}</td>
+          <td><small>{{ r.host }}</small></td>
+          <td>{{ r.check_name }}</td>
+          <td>
+            <span class="dot-{{ r.status }} status-dot"></span>
+            <span class="badge badge-{{ r.status }}">{{ r.status }}</span>
+          </td>
+          <td><small>{{ r.message }}</small></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% else %}
+<div class="alert alert-info">Chưa có lần chạy nào. Nhấn "Chạy ngay" để kiểm tra.</div>
+{% endif %}
+
+<!-- Lịch sử 30 ngày -->
+<div class="card">
+  <div class="card-header fw-bold">Lịch sử kiểm tra (30 lần gần nhất)</div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0">
+      <thead class="table-dark">
+        <tr><th>Thời gian</th><th>Trạng thái</th><th>OK</th><th>Warn</th><th>Crit</th><th>Err</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% set color_map = {'OK':'success','WARNING':'warning','CRITICAL':'danger','ERROR':'secondary'} %}
+        {% for r in runs %}
+        <tr>
+          <td><small>{{ r.started_at[:19].replace('T',' ') }}</small></td>
+          <td><span class="badge bg-{{ color_map.get(r.overall_status,'secondary') }}">{{ r.overall_status }}</span></td>
+          <td class="text-success">{{ r.ok_count }}</td>
+          <td class="text-warning">{{ r.warning_count }}</td>
+          <td class="text-danger">{{ r.critical_count }}</td>
+          <td class="text-secondary">{{ r.error_count }}</td>
+          <td><a href="/run/{{ r.run_id }}" class="btn btn-xs btn-outline-secondary btn-sm py-0">Xem</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function triggerCheck() {
+  document.getElementById('triggerBtn').disabled = true;
+  document.getElementById('triggerBtn').textContent = 'Đang trigger…';
+  fetch('/api/trigger', {method:'POST'})
+    .then(r => r.json())
+    .then(d => {
+      alert(d.message);
+      setTimeout(() => location.reload(), 2000);
+    })
+    .catch(() => location.reload());
+}
+// Tự reload mỗi 30 giây khi đang chạy
+{% if is_running %}
+setTimeout(() => location.reload(), 30000);
+{% endif %}
+</script>
+{% endblock %}

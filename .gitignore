@@ -1,0 +1,27 @@
+# Bảo mật – KHÔNG commit các file này
+config/config.yaml
+*.pem
+*.key
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Runtime data
+data/
+logs/
+*.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,1010 @@
+
+KỊCH BẢN KIỂM TRA ĐẦU NGÀY LÀM VIỆC
+Kịch bản kiểm tra cơ sở dữ liệu oracle
+Yêu cầu kiểm tra:
+(1). Thực hiện vào 08 giờ sáng đầu ngày làm việc.
+(2). Ghi nhật ký. Kết thúc công việc.
+(Công cụ sử dụng: SecureCRT, Shell, … Một Cơ sở dữ liệu cài đặt trên 02 máy DB1/DB2. Thời gian thực hiện khoảng 5-10 phút/1 database)
+Biểu 1 – Danh sách các hệ thống cơ sở dữ liệu SIMO
+Stt
+DB name
+Hệ thống
+Version
+Tình trạng
+Host IP
+HA
+DR
+1
+Simo_master
+SIMO
+Oracle 19.3
+Hoạt động
+10.1.36.1110.1.36.12
+RAC
+Không
+
+CÁC BƯỚC THỰC HIỆN KIỂM TRA CƠ SỞ DỮ LIỆU ORACLE ĐẦU NGÀY LÀM VIỆC
+Login vào máy chủ cơ sở dữ liệu theo bảng IP Public nêu trên, thực hiện theo các bước sau:
+Các bước
+Nội dung kiểm tra
+Lệnh thực hiện
+Yêu cầu/Gợi ý
+Kết quả mong đợi
+Bước 1
+Kiểm tra thông số hệ thống
+#1: date
+#2: hostname
+Kiểm tra trên cả 02 máy DB
+Kết quả lệnh show ra phài là ngày hiện tại, hostname của máy chủ của cơ sở dữ liệu cần check.
+
+Bước 2
+Kiểm tra các phân vùng
+#3: df -k
+Kiểm tra trên cả 02 máy DB
+Dung lượng các phân vùng đĩa trên máy chủ thể hiện trong mục:
+1. Kiem tra dung luong cac vung dia
+Filesystem          kbytes    used   avail %used Mounted on
+/
+Yêu cầu: Cột %used của các phân vùng đĩa phải nhỏ hơn 90% (trừ phân vùng /cdroom)
+Bước 3
+Kiểm tra trạng thái hoạt động của CSDL (CRS deamon, CRS resource).
+#4: crs_stat -t
+Thực hiện trên 01 máy
+Trạng thái CRS thể hiện trong mục:
+2. Kiem tra CRS
+Name           Type           Target    State     Host        
+------------------------------------------------------------
+ora.ARCH1.dg   ora....up.type ONLINE    ONLINE    hcmcdb1     
+ora.BACKUP.dg  ora....up.type ONLINE    ONLINE    hcmcdb1     
+ora.DATA.dg    ora....up.type ONLINE    ONLINE    hcmcdb1     
+ora.DATA1.dg   ora....up.type ONLINE    ONLINE    hcmcdb1     
+ora....ER.lsnr ora....er.type ONLINE    ONLINE    hcmcdb1     
+ora....N1.lsnr ora....er.type ONLINE    ONLINE    hcmcdb1     
+ora.asm        ora.asm.type   ONLINE    ONLINE    hcmcdb1     
+ora.cvu        ora.cvu.type   ONLINE    ONLINE    hcmcdb1     
+ora.gsd        ora.gsd.type   OFFLINE   OFFLINE               
+ora....bkup.db ora....se.type OFFLINE   OFFLINE               
+ora.hcmcdb.db  ora....se.type ONLINE    ONLINE    hcmcdb1     
+ora....tp1.svc ora....ce.type ONLINE    ONLINE    hcmcdb2     
+ora....tp2.svc ora....ce.type ONLINE    ONLINE    hcmcdb1     
+ora....svc.svc ora....ce.type ONLINE    ONLINE    hcmcdb1     
+ora....SM1.asm application    ONLINE    ONLINE    hcmcdb1     
+ora....B1.lsnr application    ONLINE    ONLINE    hcmcdb1     
+ora....db1.gsd application    OFFLINE   OFFLINE               
+ora....db1.ons application    ONLINE    ONLINE    hcmcdb1     
+ora....db1.vip ora....t1.type ONLINE    ONLINE    hcmcdb1     
+ora....SM2.asm application    ONLINE    ONLINE    hcmcdb2     
+ora....B2.lsnr application    ONLINE    ONLINE    hcmcdb2     
+ora....db2.gsd application    OFFLINE   OFFLINE               
+ora....db2.ons application    ONLINE    ONLINE    hcmcdb2     
+ora....db2.vip ora....t1.type ONLINE    ONLINE    hcmcdb2     
+ora....network ora....rk.type ONLINE    ONLINE    hcmcdb1     
+ora.oc4j       ora.oc4j.type  OFFLINE   OFFLINE               
+ora.ons        ora.ons.type   ONLINE    ONLINE    hcmcdb1     
+ora.scan1.vip  ora....ip.type ONLINE    ONLINE    hcmcdb1     
+Yêu cầu: 
++ Tất cả các dịch vụ Oracle Clusterware của database có trạng thái là ONLINE (Target, State) ngoại trừ các dịch vụ GSD, OC4J, Database [BKUP] ở trạng thái OFFLINE (Target, State)
+Bước 4
+Kiểm tra trạng thái OCR
+#5: ocrcheck
+Thực hiện trên 01 máy
+Trạng thái OCR thể hiện trong mục:
+3. Kiem tra OCR
+Status of Oracle Cluster Registry is as follows :
+         Version                  :          3
+         Total space (kbytes)     :     262120
+         Used space (kbytes)      :       3296
+         Available space (kbytes) :     258824
+         ID                       : 1816574574
+         Device/File Name         :      +DATA
+                                    Device/File integrity check succeeded
+                                    Device/File not configured
+                                    Device/File not configured
+                                    Device/File not configured
+                                    Device/File not configured
+         Cluster registry integrity check succeeded
+         Logical corruption check bypassed due to non-privileged user
+Yêu cầu: Trạng thái của đĩa OCR phải là: Device/File integrity check succeeded và Cluster registry integrity check succeeded.
+Bước 5
+Kiểm tra trạng thái voting disk
+#6: crsctl query css votedisk
+
+Trạng thái voting disk thể hiện trong mục:
+4. Kiem tra votting disk
+##  STATE    File Universal Id                File Name Disk group
+--  -----    -----------------                --------- ---------
+ 1. ONLINE   751e91a6d3c54f93bf2d0eda95d492d9 (/dev/roradisk/disk209) [DATA]
+ 2. ONLINE   23f524be0e4c4f7ebf62571263834aec (/dev/roradisk/disk214) [DATA]
+ 3. ONLINE   a38108a80b024fd2bfe2007e9c562115 (/dev/roradisk/disk222) [DATA]
+Located 3 voting disk(s).
+Yêu cầu: cột STATE phải là ONLINE và phải có Located 3 voting disk(s).
+Bước 6
+Kiểm tra khả năng switch archive
+#7: ORACLE_SID=instancename 
+#8: export ORACLE_SID
+#9: sqlplus “/as sysdba”
+alter system archive log current;
+(Xem instance name tương ứng trong Biểu 1)
+Thực hiện trên 1 máy
+Khả năng switch archive thể hiện trong mục:
+SQL> 5.Kiem tra trang thai archive
+SQL> 
+System altered.
+Yêu cầu: Kết quả trả về phải là System altered.
+Bước 7
+Kiểm tra Free Space của Tablespaces của Oracle
+COLUMN pct_free FORMAT 999.99 HEADING "% Free"
+COLUMN name FORMAT A16 HEADING "Tablespace Name"
+COLUMN mbytes FORMAT 99,999,999 HEADING "Total MBytes"
+COLUMN used FORMAT 99,999,999 HEADING "Used Mbytes"
+COLUMN free FORMAT 99,999,999 HEADING "Free Mbytes"
+BREAK ON REPORT
+COMPUTE SUM OF mbytes ON REPORT
+COMPUTE SUM OF free ON REPORT
+COMPUTE SUM OF used ON REPORT
+SELECT
+fs.tablespace_name name,
+df.totalspace mbytes,
+(df.totalspace - fs.freespace) used,fs.freespace free,
+100 * (fs.freespace / df.totalspace) pct_free
+FROM
+(SELECT
+tablespace_name,
+ROUND(SUM(bytes) / 1048576) TotalSpace
+FROM
+dba_data_files
+GROUP BY
+tablespace_name
+) df,
+(SELECT
+tablespace_name,
+ROUND(SUM(bytes) / 1048576) FreeSpace
+FROM
+dba_free_space
+GROUP BY
+tablespace_name
+) fs
+WHERE
+df.tablespace_name = fs.tablespace_name(+);
+Copy toàn bộ vào Secure CRT.
+Thực hiện trên 1 máy
+Free tablespace thể hiện trong mục:
+SQL> 6.Kiem tra Free Tablespace
+Tablespace Name  Total MBytes Used Mbytes Free Mbytes  % Free
+---------------- ------------ ----------- ----------- -------
+SYSTEM                  1,540         751         789   51.23
+RPC_LVD                   100           1          99   99.00
+RIBPS_DFS02               100           1          99   99.00
+RPC_TRX                44,328      32,529      11,799   26.62
+USERS                  13,689       8,213       5,476   40.00
+PIBPS_DFS                 100           1          99   99.00
+RIBPS_DFS01               100           1          99   99.00
+RIBPS_DFS04            10,240           1      10,239   99.99
+UNDOTBS2                  400         245         155   38.75
+RPC_OTHER               8,192       3,780       4,412   53.86
+RPC_BJ                 71,986      50,585      21,401   29.73
+Tablespace Name  Total MBytes Used Mbytes Free Mbytes  % Free
+---------------- ------------ ----------- ----------- -------
+sum                   182,098     123,239      58,859
+Yêu cầu: Các tablespace system, sysaux, example càn cột “%Free” lớn hơn 3%. Các tablespace undotbs1, undotbs2 có cột ”Total Mbytes” lớn hơn 400. Các tablespace còn lại phải có cột “% Free” lớn hơn 15.
+Bước 8
+Kiểm tra các unusable indexes
+select  ' alter index '||owner || '.' || index_name ||  ' rebuild ; '
+  from dba_indexes where STATUS  = 'UNUSABLE'
+   union all
+      select  ' alter index '||INDEX_OWNER || '.' || index_name ||  ' rebuild  partition ' ||partition_name || '; '
+         from dba_ind_partitions where STATUS  = 'UNUSABLE'
+          union all
+             select  ' alter index '||INDEX_OWNER || '.' || index_name ||  ' rebuild  subpartition ' ||subpartition_name || '; '
+                from dba_ind_subpartitions where STATUS  = 'UNUSABLE';
+Copy toàn bộ vào Secure CRT.
+Thực hiện trên 1 máy
+
+Unusacle indexes thể hiện trong mục :
+SQL> 7.Kiem tra cac unusable indexes
+SQL>   2    3    4    5    6    7    8  
+no rows selected
+Yêu cầu: Kết quả mong đợi là no rows selected
+Bước 9
+Kiểm tra các invalid objects 
+select
+   'ALTER ' || OBJECT_TYPE || ' ' ||
+      OWNER || '.' || OBJECT_NAME || ' COMPILE;'
+      from
+         dba_objects
+         where
+            status = 'INVALID'
+            and
+               object_type in ('PACKAGE','FUNCTION','PROCEDURE','VIEW','SYNONYM')
+and owner in (select username from dba_users where account_status ='OPEN');
+Copy toàn bộ vào Secure CRT
+Thực hiện trên 1 máy
+Các invalid objects thể hiện trong mục:
+SQL> 8.Kiem tra invalid objects
+SQL>   2    3    4    5    6    7    8    9  
+no rows selected
+Yêu cầu: Kết quả mong đợi là no rows selected
+Bước 10
+Kiểm tra Free ASM disk group
+select name,TOTAL_MB,FREE_MB, trunc(((TOTAL_MB-FREE_MB)/TOTAL_MB)*100,2) "%used" from v$asm_diskgroup;
+Copy toàn bộ vào Secure CRT.
+Thực hiện trên 1 máy
+Free ASM disk group thể hiện trong mục:
+SQL> 10.Kiem tra Free ASM
+SQL> 
+Tablespace Name    TOTAL_MB    FREE_MB      %used
+---------------- ---------- ---------- ----------
+ARCH1                409600     155296      62.08
+BACKUP              1536000     628416      59.08
+DATA1               1024000     646448      36.87
+DATA                   6144       5000      18.61
+Yêu cầu: Phần trăm sử dụng của các ASM_DISKGROUP phải nhỏ hơn 90% (Cột %used phải có giá trị nhỏ hơn 90).
+Chú ý: Trừ phân vùng BCTKMBOX, BCTKU03 trên máy bctk, phân vùng MAILBOX trên máy 10.1.1.23 mount thành phân vùng trên máy chủ. Kiểm tra bằng lệnh df -kh
+Bước 11
+Kiểm tra các lỗi phát sinh liên quan đến CSDL trong alert file.
+Thực hiện lệnh sau để tìm thư mục chưa file alert log:
+ show parameter dump;
+Tham số background_dump_dest chứa đường dẫn đến thư mục file alert log. Thoát khỏi SQL.
+#10: exit
+Chuyển vào thư mục chứa alert log:
+#11: cd /u01/app/oracle/diag/rdbms/bct                                                              k/bctk1/trace
+#12: tail -1000 alert_*****.log | egrep 'ORA-|TNS-|Errors|'
+Thực hiện trên 02 máy
+11. Kiem tra alert log:
+SQL> show parameter dump;
+NAME                                 TYPE        VALUE
+------------------------------------ ----------- ------------------------------
+background_core_dump                 string      partial
+background_dump_dest                 string      /u01/app/oracle/diag/rdbms/bct                                                              k/bctk1/trace
+core_dump_dest                       string      /u01/app/oracle/diag/rdbms/bct                                                 k/bctk1/cdump
+max_dump_file_size                   string      unlimited
+shadow_core_dump                     string      partial
+user_dump_dest                       string      /u01/app/oracle/diag/rdbms/bct                                         k/bctk1/trace
+Yêu cầu: trong file alert log không có dòng dữ liệu lỗi nào trả về.
+
+
+Kịch bản kiểm tra cơ sở dữ liệu Mongo
+Stt
+DB name
+Hệ thống
+Version
+Tình trạng
+Host IP
+HA
+DR
+1
+simo
+SIMO
+Mongo 
+Hoạt động
+10.1.36.4110.1.36.44
+Cluster
+Không
+
+Các bước
+Nội dung kiểm tra
+Lệnh thực hiện
+Yêu cầu/Gợi ý
+Kết quả mong đợi
+Bước 1
+Kiểm tra thông số hệ thống
+#1: date
+#2: hostname
+Kiểm tra trên cả 02 máy DB
+Kết quả lệnh show ra phài là ngày hiện tại, hostname của máy chủ của cơ sở dữ liệu cần check.
+Bước 2
+Kiểm tra các phân vùng
+#3: df -kh
+Kiểm tra trên cả 02 máy DB
+Dung lượng các phân vùng đĩa trên máy chủ thể hiện trong mục:
+1. Kiem tra dung luong cac vung dia
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             3.8G     0  3.8G   0% /dev
+tmpfs                3.8G     0  3.8G   0% /dev/shm
+tmpfs                3.8G  276M  3.6G   8% /run
+tmpfs                3.8G     0  3.8G   0% /sys/fs/cgroup
+/dev/mapper/ol-root   61G   15G   47G  24% /
+/dev/sda2           1014M  356M  659M  36% /boot
+/dev/sda1            599M  5.1M  594M   1% /boot/efi
+/dev/mapper/ol-home   30G  245M   30G   1% /home
+tmpfs                777M   28K  777M   1% /run/user/0
+Yêu cầu: Cột %used của các phân vùng đĩa phải nhỏ hơn 90% (trừ phân vùng /cdroom)
+Bước 3
+Kiểm tra trạng thái hoạt động của CSDL mongo 
+#4: systemctl status mongod
+Thực hiện trên 01 máy
+Trạng thái db thể hiện bằng việc online service:service mongodb status
+
+
+Kiểm tra cơ sở dữ liệu Hadoop.
+Stt
+DB name
+Hệ thống
+Version
+Tình trạng
+Host IP
+HA
+DR
+1
+hadoop
+SIMO
+ 
+Hoạt động
+10.1.36.31 
+10.1.36.34 
+10.1.36.37
+Cluster
+Không
+
+Các bước
+Nội dung kiểm tra
+Lệnh thực hiện
+Yêu cầu/Gợi ý
+Kết quả mong đợi
+Bước 1
+Kiểm tra thông số hệ thống
+#1: date
+#2: hostname
+Kiểm tra trên cả 02 máy DB
+Kết quả lệnh show ra phài là ngày hiện tại, hostname của máy chủ của cơ sở dữ liệu cần check.
+Bước 2
+Kiểm tra các phân vùng
+#3: df -kh
+Kiểm tra trên cả 02 máy DB
+Dung lượng các phân vùng đĩa trên máy chủ thể hiện trong mục:
+Kiem tra dung luong cac vung dia
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             3.8G     0  3.8G   0% /dev
+tmpfs                3.8G     0  3.8G   0% /dev/shm
+tmpfs                3.8G  276M  3.6G   8% /run
+tmpfs                3.8G     0  3.8G   0% /sys/fs/cgroup
+/dev/mapper/ol-root   61G   15G   47G  24% /
+/dev/sda2           1014M  356M  659M  36% /boot
+/dev/sda1            599M  5.1M  594M   1% /boot/efi
+/dev/mapper/ol-home   30G  245M   30G   1% /home
+tmpfs                777M   28K  777M   1% /run/user/0
+Yêu cầu: Cột %used của các phân vùng đĩa phải nhỏ hơn 90% (trừ phân vùng /cdroom)
+Bước 3
+Kiểm tra trạng thái hoạt động của CSDL mongo 
+#4: hdfs dfsadmin -report
+Thực hiện trên 01 máy
+Trạng thái db thể hiện bằng mode is ON và live datanode:hdfs dfsadmin -report
+
+
+
+
+Kiểm tra ứng dụng
+Biểu 2 – Danh sách các ứng dụng SIMO
+Stt
+Tên máy chủ
+Hệ thống
+Tình trạng
+Host IP
+HA
+DR
+1
+Wso2 EI Cluster
+SIMO
+Hoạt động
+10.1.46.31 10.1.46.32
+cluster
+Không
+2
+Wso2 Apim Cluster
+SIMO
+Hoạt động
+10.1.16.11 
+10.1.16.12
+cluster
+Không
+3
+Haproxy
+SIMO
+Hoạt động
+10.1.16.17 
+10.1.16.18
+cluster
+Không
+4
+Kafka
+SIMO
+Hoạt động
+10.1.46.23 
+10.1.46.24
+cluster
+Không
+5
+Application
+SIMO
+Hoạt động
+10.1.46.41
+10.1.46.42 
+10.1.46.43
+cluster
+Không
+
+Các bước
+Nội dung kiểm tra
+Lệnh thực hiện
+Yêu cầu/Gợi ý
+Kết quả mong đợi
+Bước 1
+Kiểm tra thông số hệ thống
+#1: date
+#2: hostname
+Kiểm tra trên cả 02 máy ứng dụng
+Kết quả lệnh show ra phài là ngày hiện tại, hostname của máy chủ của ứng dụng cần check.
+Bước 2
+Kiểm tra các phân vùng
+#3: df -kh
+Kiểm tra trên cả 02 máy DB
+Dung lượng các phân vùng đĩa trên máy chủ thể hiện trong mục:
+1. Kiem tra dung luong cac vung dia
+Filesystem           Size  Used Avail Use% Mounted on
+devtmpfs             3.8G     0  3.8G   0% /dev
+tmpfs                3.8G     0  3.8G   0% /dev/shm
+tmpfs                3.8G  276M  3.6G   8% /run
+tmpfs                3.8G     0  3.8G   0% /sys/fs/cgroup
+/dev/mapper/ol-root   61G   15G   47G  24% /
+/dev/sda2           1014M  356M  659M  36% /boot
+/dev/sda1            599M  5.1M  594M   1% /boot/efi
+/dev/mapper/ol-home   30G  245M   30G   1% /home
+tmpfs                777M   28K  777M   1% /run/user/0
+Yêu cầu: Cột %used của các phân vùng đĩa phải nhỏ hơn 90% (trừ phân vùng /cdroom)
+Bước 3
+Kiểm tra trạng thái hoạt động của service
+#4: systemctl status service_name
+Thực hiện trên 01 máy
+Trạng thái db thể hiện bằng việc online service:đối với wso2am truy cập bằng user root và kiểm tra bằng câu lệnh sau:
+systemctl status wso2am-3.2.0.service
+
+Đối với haproxy truy cập bằng user root và kiểm tra bằng câu lệnh sau:
+Đối với kafka truy cập bằng user root và kiểm tra bằng câu lệnh sau:
+
+Đối với application truy cập bằng user root và kiểm tra bằng câu lệnh sau:
+
++ riêng đối với application cần phải kiểm tra thêm các service docker ở trạng thái n/n với user root:
+
+
+
+=============================
+
+
+
+KẾ HOẠCH PHÁT TRIỂN
+ỨNG DỤNG TỰ ĐỘNG HÓA DAILY CHECK SIMO
+Application Development Plan – SIMO Automated Daily Check System
+
+Phiên bản
+1.0
+Ngày lập
+Tháng 4, 2026
+Đơn vị thực hiện
+Phòng Phần mềm – SIMO
+Phân loại
+Tài liệu nội bộ – Bảo mật
+Trạng thái
+Dự thảo
+
+1. TỔNG QUAN DỰ ÁN
+1.1 Bối cảnh và Vấn đề
+Hệ thống SIMO hiện đang vận hành một hạ tầng công nghệ thông tin phức tạp bao gồm cơ sở dữ liệu Oracle RAC, MongoDB Cluster, Hadoop Cluster và nhiều ứng dụng quan trọng (WSO2, HAProxy, Kafka, Application Servers). Mỗi ngày làm việc, đội ngũ vận hành phải thực hiện kiểm tra đầu ngày (Daily Check) theo một kịch bản thủ công với hơn 20 bước kiểm tra trên nhiều máy chủ khác nhau.
+
+Quy trình hiện tại có các hạn chế sau:
+Tốn nhiều thời gian: 5-10 phút/database, nhân với nhiều hệ thống, tổng thời gian lên đến 45-60 phút mỗi sáng
+Dễ bỏ sót: thực hiện thủ công dễ dẫn đến việc bỏ qua một số bước kiểm tra
+Phụ thuộc vào con người: khi nhân sự vắng mặt, quy trình kiểm tra có thể bị gián đoạn
+Thiếu lịch sử: không có dữ liệu lịch sử để phân tích xu hướng và cảnh báo sớm
+Chậm trễ phát hiện sự cố: chỉ phát hiện vào 08:00 sáng thay vì liên tục
+
+1.2 Mục tiêu Dự án
+Xây dựng hệ thống tự động hóa hoàn toàn quy trình Daily Check của hệ thống SIMO với các mục tiêu cụ thể:
+Tự động hóa 100% các bước kiểm tra thủ công được mô tả trong kịch bản Daily Check
+Chạy tự động lúc 08:00 mỗi ngày làm việc và gửi báo cáo kết quả
+Cảnh báo tức thời qua email/chat khi phát hiện bất thường
+Lưu trữ lịch sử kết quả kiểm tra để phân tích xu hướng
+Giảm thời gian kiểm tra thủ công xuống còn 0 phút (hoàn toàn tự động)
+Cung cấp dashboard trực quan cho đội vận hành theo dõi trạng thái hệ thống
+
+1.3 Phạm vi Hệ thống
+Ứng dụng sẽ tự động hóa kiểm tra cho các hệ thống sau:
+
+STT
+Hệ thống
+Nội dung kiểm tra
+Số bước
+Thời gian
+1
+Oracle DB (Simo_master)
+Kiểm tra hệ thống, phân vùng, CRS, OCR, Voting Disk, Archive, Tablespace, Index, Object, ASM, Alert Log
+11 bước
+08:00 sáng
+2
+MongoDB (simo)
+Kiểm tra thông số hệ thống, phân vùng, trạng thái service mongod
+3 bước
+08:00 sáng
+3
+Hadoop
+Kiểm tra thông số hệ thống, phân vùng, báo cáo HDFS (dfsadmin -report)
+3 bước
+08:00 sáng
+4
+Ứng dụng (WSO2, HAProxy, Kafka, App)
+Kiểm tra thông số hệ thống, phân vùng, trạng thái service, docker container
+3 bước/app
+08:00 sáng
+
+
+2. KIẾN TRÚC ỨNG DỤNG
+2.1 Kiến trúc Tổng thể
+Hệ thống được thiết kế theo mô hình kiến trúc phân lớp (Layered Architecture) với các thành phần chính:
+
+🖥️  PRESENTATION LAYER – Dashboard & Báo cáo
+   Web Dashboard (Grafana/Flask)  |  Email Report  |  Alert Notification (Slack/Teams)
+⚙️  APPLICATION LAYER – Core Logic
+   Scheduler (APScheduler)  |  Check Engine  |  Alert Manager  |  Report Generator
+🔌  CONNECTOR LAYER – Kết nối Hệ thống
+   SSH Connector  |  Oracle Connector  |  MongoDB Connector  |  Hadoop Connector
+🗄️  DATA LAYER – Lưu trữ Kết quả
+   PostgreSQL (History DB)  |  Log Files  |  Config Store (YAML/Vault)
+🏗️  INFRASTRUCTURE – Mục tiêu kiểm tra
+   Oracle RAC DB  |  MongoDB Cluster  |  Hadoop Cluster  |  WSO2/HAProxy/Kafka/App
+
+2.2 Luồng Xử lý
+Scheduler khởi động lúc 07:55 để chuẩn bị kết nối
+08:00: Check Engine bắt đầu chạy song song các kiểm tra trên tất cả hệ thống
+Mỗi check module kết nối SSH tới máy chủ mục tiêu, thực thi lệnh và phân tích kết quả
+Kết quả được so sánh với ngưỡng chuẩn (threshold) được cấu hình sẵn
+Alert Manager gửi cảnh báo ngay nếu có bất thường (không chờ đến cuối)
+Report Generator tạo báo cáo tổng hợp và gửi email lúc khoảng 08:15
+Kết quả được lưu vào database lịch sử để phân tích xu hướng
+
+2.3 Các Module Kiểm tra
+Oracle Database Module (11 checks)
+Bước 1: Kiểm tra date/hostname – xác nhận kết nối đúng máy chủ
+Bước 2: Kiểm tra phân vùng đĩa – df -k, cảnh báo nếu %used >= 90%
+Bước 3: Kiểm tra CRS status – crs_stat -t, xác nhận ONLINE/OFFLINE đúng quy định
+Bước 4: Kiểm tra OCR – ocrcheck, xác nhận integrity check succeeded
+Bước 5: Kiểm tra Voting Disk – crsctl query css votedisk, xác nhận 3 disk ONLINE
+Bước 6: Kiểm tra Archive Switch – sqlplus, alter system archive log current
+Bước 7: Kiểm tra Free Tablespace – SQL query, cảnh báo nếu %Free dưới ngưỡng
+Bước 8: Kiểm tra Unusable Indexes – trả về no rows selected là bình thường
+Bước 9: Kiểm tra Invalid Objects – trả về no rows selected là bình thường
+Bước 10: Kiểm tra ASM Disk Group – %used phải nhỏ hơn 90%
+Bước 11: Kiểm tra Alert Log – grep ORA-/TNS-/Errors trong 1000 dòng cuối
+MongoDB Module (3 checks)
+Bước 1: Kiểm tra date/hostname trên cả 2 node (10.1.36.41 và 10.1.36.44)
+Bước 2: Kiểm tra phân vùng đĩa – df -kh, %used < 90%
+Bước 3: Kiểm tra trạng thái service – systemctl status mongod
+Hadoop Module (3 checks)
+Bước 1: Kiểm tra date/hostname trên 3 node (10.1.36.31/34/37)
+Bước 2: Kiểm tra phân vùng đĩa – df -kh
+Bước 3: Kiểm tra HDFS – hdfs dfsadmin -report, xác nhận Live DataNode
+Application Module (5 ứng dụng x 3 checks)
+WSO2 EI Cluster (10.1.46.31/32): systemctl status wso2am-3.2.0.service
+WSO2 APIM Cluster (10.1.16.11/12): systemctl status wso2am-3.2.0.service
+HAProxy (10.1.16.17/18): systemctl status haproxy
+Kafka (10.1.46.23/24): systemctl status kafka
+Application Server (10.1.46.41/42/43): systemctl status + docker container check
+
+3. KẾ HOẠCH PHÁT TRIỂN
+3.1 Phương pháp tiếp cận
+Dự án sẽ được thực hiện theo phương pháp Agile Incremental với 5 giai đoạn phát triển rõ ràng, mỗi giai đoạn tạo ra một phần sản phẩm có thể kiểm thử và sử dụng được. Ưu tiên phát triển core automation trước, sau đó bổ sung dashboard và tính năng nâng cao.
+
+GIAI ĐOẠN 1: Khảo sát & Phân tích Yêu cầu   [Tuần 1-2]
+Phân tích chi tiết kịch bản Daily Check, thiết kế database schema và cấu trúc project
+STT
+Nhiệm vụ
+Chi tiết
+Đầu ra
+1
+Phân tích kịch bản Daily Check
+Dịch 100% bước kiểm tra thành logic code có thể tự động hóa; xác định input/output/threshold cho từng bước
+Spec v1.0
+2
+Thiết lập môi trường phát triển
+Cài đặt Python, các thư viện cần thiết (Paramiko, cx_Oracle, PyMongo, APScheduler); thiết lập Git repository
+Dev Env
+3
+Thiết kế cấu trúc project
+Định nghĩa module structure, naming convention, config schema (YAML), error handling strategy
+Architecture Doc
+4
+Thiết kế database schema
+Schema lưu trữ kết quả check: check_runs, check_results, alert_history; ERD diagram
+DB Schema
+5
+Thiết lập kết nối thử nghiệm
+Test SSH kết nối tới tất cả máy chủ Oracle/MongoDB/Hadoop/App; xác nhận quyền truy cập
+Conn. Test
+
+GIAI ĐOẠN 2: Thiết kế Kiến trúc & Skeleton   [Tuần 2-3]
+Xây dựng khung ứng dụng cốt lõi: SSH connector, config loader, logging framework
+STT
+Nhiệm vụ
+Chi tiết
+Đầu ra
+1
+Xây dựng SSH Connection Manager
+Class quản lý kết nối SSH pool, retry logic, timeout handling, multi-host parallel execution
+ssh_manager.py
+2
+Xây dựng Config Manager
+Load cấu hình từ YAML: thông tin hosts, credentials (encrypted), thresholds, notification settings
+config.py
+3
+Xây dựng Logger & Result Store
+Structured logging, lưu kết quả vào SQLite/PostgreSQL với timestamps, status, raw output
+logger.py
+4
+Xây dựng Alert Manager
+Engine gửi cảnh báo qua SMTP/Webhook khi phát hiện bất thường, chống spam alert
+alert.py
+5
+Viết unit tests cho core modules
+Test coverage >= 80% cho các module lõi; mock SSH connections
+Test Suite
+
+GIAI ĐOẠN 3: Phát triển Check Modules   [Tuần 3-5]
+Phát triển và kiểm thử từng module kiểm tra theo kịch bản Daily Check SIMO
+STT
+Nhiệm vụ
+Chi tiết
+Đầu ra
+1
+Oracle Check Module
+11 hàm kiểm tra: disk space, CRS, OCR, votedisk, archive, tablespace, indexes, objects, ASM, alert log. Tích hợp cx_Oracle cho SQL queries
+oracle_checks.py
+2
+MongoDB Check Module
+Kiểm tra trạng thái service mongod, disk space trên 2 node cluster. Parse output systemctl
+mongo_checks.py
+3
+Hadoop Check Module
+Parse output hdfs dfsadmin -report: Safe Mode, Live DataNodes, DFS capacity, disk usage. Kiểm tra trên 3 node
+hadoop_checks.py
+4
+Application Check Module
+Kiểm tra 5 ứng dụng: WSO2 EI/APIM, HAProxy, Kafka, App Servers. Bao gồm docker container status check
+app_checks.py
+5
+Check Orchestrator
+Điều phối chạy song song tất cả modules; tổng hợp kết quả; tính toán overall status (OK/WARNING/CRITICAL)
+orchestrator.py
+
+GIAI ĐOẠN 4: Tích hợp, Scheduler & Testing   [Tuần 5-6]
+Tích hợp toàn bộ, thiết lập scheduler tự động và kiểm thử tổng thể trên môi trường staging
+STT
+Nhiệm vụ
+Chi tiết
+Đầu ra
+1
+Tích hợp Scheduler
+Cấu hình APScheduler chạy tự động lúc 08:00 weekdays; cơ chế retry nếu thất bại; manual trigger API
+scheduler.py
+2
+Phát triển Report Generator
+Tạo báo cáo HTML đẹp với bảng kết quả màu sắc (xanh/đỏ/vàng); gửi email với inline HTML
+report.py
+3
+Integration Testing
+Kiểm thử end-to-end trên môi trường staging; verify từng check với kết quả thực tế; validate alert logic
+Test Report
+4
+Performance Testing
+Đảm bảo toàn bộ quá trình check hoàn thành trong vòng 10 phút; tối ưu parallel execution
+Perf. Report
+5
+Security Review
+Review bảo mật: mã hóa credentials, SSH key management, network security, audit log
+Security Report
+
+GIAI ĐOẠN 5: Dashboard, Triển khai & Vận hành   [Tuần 6-8]
+Xây dựng dashboard trực quan, đóng gói Docker, triển khai production và bàn giao
+STT
+Nhiệm vụ
+Chi tiết
+Đầu ra
+1
+Phát triển Web Dashboard
+Flask app hiển thị kết quả check real-time, lịch sử 30 ngày, trend charts; responsive design
+dashboard/
+2
+Docker Containerization
+Dockerfile và docker-compose.yml; tách services: scheduler, web, database; volume management
+docker-compose.yml
+3
+Triển khai Production
+Deploy lên máy chủ vận hành; cấu hình production credentials; thiết lập monitoring cho chính ứng dụng
+Prod Deploy
+4
+User Acceptance Testing
+Chạy thử 1 tuần song song với quy trình manual; so sánh kết quả; thu thập phản hồi từ team vận hành
+UAT Sign-off
+5
+Bàn giao & Đào tạo
+Tài liệu vận hành; hướng dẫn cấu hình; training team; runbook xử lý sự cố
+Handover Docs
+
+
+4. LỊCH TRÌNH TỔNG THỂ
+
+Giai đoạn
+Tuần 1
+Tuần 2
+Tuần 3-4
+Tuần 5-6
+Tuần 7+
+Giai đoạn 1: Khảo sát & Phân tích
+■
+■
+
+
+
+Giai đoạn 2: Thiết kế Kiến trúc
+
+■
+■
+
+
+Giai đoạn 3: Phát triển Core
+
+
+■
+■
+
+Giai đoạn 4: Tích hợp & Test
+
+
+
+■
+■
+Giai đoạn 5: Triển khai & Vận hành
+
+
+
+
+■
+
+Tổng thời gian dự kiến: 7-8 tuần làm việc từ khi bắt đầu đến khi go-live production.
+Các giai đoạn có thể overlap để rút ngắn timeline nếu có đủ nhân lực.
+
+5. CÔNG NGHỆ SỬ DỤNG
+
+Thành phần
+Công nghệ
+Mô tả
+Backend / Automation
+Python 3.10+
+Ngôn ngữ chính cho automation scripts
+SSH Connectivity
+Paramiko / Fabric
+Kết nối SSH tới các máy chủ DB & App
+Scheduling
+APScheduler / Cron
+Lên lịch chạy tự động 08:00 hàng ngày
+Oracle DB Interface
+cx_Oracle / python-oracledb
+Thực thi SQL kiểm tra tablespace, index, ASM...
+MongoDB Interface
+PyMongo
+Kết nối và kiểm tra trạng thái MongoDB cluster
+Hadoop Interface
+subprocess / Hadoop CLI
+Gọi lệnh hdfs dfsadmin -report qua SSH
+Notification
+SMTP / Webhook
+Gửi email/Slack khi phát hiện lỗi
+Logging
+Python logging + ELK
+Ghi nhật ký đầy đủ kết quả mỗi lần chạy
+Dashboard
+Grafana / Web UI (Flask)
+Hiển thị kết quả kiểm tra theo thời gian thực
+Config Management
+YAML / .env
+Quản lý thông tin kết nối, ngưỡng cảnh báo
+Container
+Docker + Docker Compose
+Đóng gói và triển khai ứng dụng
+CI/CD
+GitHub Actions / Jenkins
+Tích hợp liên tục và triển khai tự động
+
+Lưu ý: Tất cả công nghệ được chọn đều là mã nguồn mở, không phát sinh chi phí bản quyền. Ưu tiên sử dụng các công nghệ mà đội IT đã quen thuộc để giảm learning curve.
+
+6. QUẢN LÝ RỦI RO
+
+ID
+Rủi ro
+Xác suất
+Tác động
+Giải pháp
+R1
+Không thể SSH vào máy chủ do firewall hoặc mật khẩu thay đổi
+Cao
+Cao
+Sử dụng SSH key thay password; lưu thông tin kết nối trong vault bảo mật
+R2
+Kết quả kiểm tra Oracle sai do version SQL khác nhau
+Trung bình
+Cao
+Kiểm thử trên môi trường staging trước; có unit test cho từng SQL
+R3
+Cảnh báo giả (false positive) gây nhiễu
+Cao
+Trung bình
+Tuning ngưỡng cảnh báo; thêm cơ chế xác nhận nhiều lần trước khi alert
+R4
+Ứng dụng chạy automation gặp sự cố
+Thấp
+Cao
+Dự phòng chạy manual; monitor chính ứng dụng automation
+R5
+Bảo mật thông tin kết nối DB/App
+Trung bình
+Cao
+Mã hóa credentials; chỉ cấp quyền readonly cho user automation
+
+7. NHÂN SỰ VÀ NGUỒN LỰC
+7.1 Đội nhóm
+Vai trò
+Số lượng
+Trách nhiệm chính
+Thời gian tham gia
+Kỹ sư Python (Backend)
+1
+Phát triển tất cả check modules và core engine
+Toàn bộ dự án (100%)
+DBA Oracle/MongoDB
+1
+Tư vấn SQL queries, xác nhận kết quả kiểm tra
+Giai đoạn 1, 3, 4 (50%)
+Kỹ sư Hạ tầng (Linux)
+1
+Tư vấn SSH, cấp quyền truy cập, hỗ trợ deploy
+Giai đoạn 1, 5 (30%)
+Tech Lead / Architect
+1
+Review thiết kế, code review, đưa ra quyết định kỹ thuật
+Toàn bộ dự án (20%)
+QA Engineer
+1
+Xây dựng test cases, thực hiện UAT
+Giai đoạn 4, 5 (50%)
+
+7.2 Yêu cầu Hạ tầng
+1 máy chủ vận hành ứng dụng automation (2 CPU, 4GB RAM, 50GB disk) – có thể dùng VM
+Kết nối mạng nội bộ tới tất cả các máy chủ Oracle, MongoDB, Hadoop, App servers
+SSH user với quyền read-only trên tất cả các hệ thống mục tiêu
+Oracle user với quyền SELECT trên DBA_* views (không cần DBA role)
+SMTP server hoặc webhook URL để gửi cảnh báo
+
+8. ĐẦU RA DỰ ÁN (DELIVERABLES)
+#
+Đầu ra
+Mô tả
+Giai đoạn
+D1
+Source Code (Git repository)
+Toàn bộ mã nguồn Python, tests, configs với version control
+1-5
+D2
+Tài liệu kỹ thuật
+Architecture doc, API doc, database schema, deployment guide
+1, 2
+D3
+Check Modules (Oracle)
+11 check functions cho Oracle RAC database
+3
+D4
+Check Modules (MongoDB)
+3 check functions cho MongoDB cluster
+3
+D5
+Check Modules (Hadoop)
+3 check functions cho Hadoop cluster
+3
+D6
+Check Modules (Application)
+Kiểm tra 5 ứng dụng: WSO2, HAProxy, Kafka, App
+3
+D7
+Daily Check Report Template
+Template báo cáo HTML được gửi email mỗi sáng
+4
+D8
+Web Dashboard
+Dashboard web hiển thị trạng thái real-time và lịch sử
+5
+D9
+Docker Compose Package
+Package deploy hoàn chỉnh với docker-compose.yml
+5
+D10
+Tài liệu vận hành & Runbook
+Hướng dẫn cấu hình, vận hành, xử lý sự cố
+5
+
+9. TIÊU CHÍ THÀNH CÔNG
+Dự án được coi là thành công khi đạt được tất cả các tiêu chí sau:
+
+Chức năng: Tự động hóa 100% các bước kiểm tra trong kịch bản Daily Check SIMO v1.0
+Thời gian: Toàn bộ quá trình check hoàn thành trong vòng 10 phút (từ 08:00 đến 08:10)
+Độ tin cậy: Tỷ lệ chạy thành công >= 99% trong điều kiện hạ tầng bình thường
+Chính xác: Kết quả kiểm tra tự động khớp 100% với kết quả kiểm tra thủ công trong giai đoạn UAT
+Cảnh báo: Thời gian từ khi phát sinh bất thường đến khi nhận alert <= 5 phút
+Báo cáo: Email báo cáo được gửi tự động mỗi ngày làm việc trước 08:15
+Vận hành: Đội IT có thể vận hành và cấu hình ứng dụng sau 2 buổi đào tạo
+
+10. PHỤ LỤC – DANH SÁCH MÁY CHỦ
+A. Hệ thống Cơ sở Dữ liệu
+STT
+DB Name
+Hệ thống
+Version
+Host IP
+HA
+DR
+1
+Simo_master
+SIMO
+Oracle 19.3
+10.1.36.11 10.1.36.12
+RAC
+Không
+2
+simo
+SIMO
+MongoDB
+10.1.36.41 10.1.36.44
+Cluster
+Không
+3
+hadoop
+SIMO
+Hadoop
+10.1.36.31 10.1.36.34 10.1.36.37
+Cluster
+Không
+
+B. Hệ thống Ứng dụng
+STT
+Tên máy chủ
+Hệ thống
+Host IP
+HA
+DR
+1
+WSO2 EI Cluster
+SIMO
+10.1.46.31 / 10.1.46.32
+Cluster
+Không
+2
+WSO2 APIM Cluster
+SIMO
+10.1.16.11 / 10.1.16.12
+Cluster
+Không
+3
+HAProxy
+SIMO
+10.1.16.17 / 10.1.16.18
+Cluster
+Không
+4
+Kafka
+SIMO
+10.1.46.23 / 10.1.46.24
+Cluster
+Không
+5
+Application Server
+SIMO
+10.1.46.41 / 10.1.46.42 / 10.1.46.43
+Cluster
+Không
+
+— Hết tài liệu —
