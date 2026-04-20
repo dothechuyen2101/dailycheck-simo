@@ -456,3 +456,11 @@ docker-compose up --build
 3. **Docker Replicas** – Số replica (nếu dùng Docker)
 
 ---
+
+
+docker pull python:3.11-slim
+docker save python:3.11-slim -o python311.tar
+
+docker load -i python311.tar
+docker run -d -p 5000:5000 simo-dailycheck:1.0
+

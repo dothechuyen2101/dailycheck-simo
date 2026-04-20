@@ -41,9 +41,9 @@ def check_system_info(client, host_name: str) -> CheckResult:
 def check_disk_space(client, host_name: str) -> CheckResult:
     name = "Bước 2 – Phân vùng đĩa"
     threshold = get("thresholds.disk_usage_max_pct", 90)
-    res = client.run("df -kh")
+    res = client.run("df -T")
     if not res.success:
-        return _err(host_name, name, f"df -kh thất bại: {res.stderr}")
+        return _err(host_name, name, f"df -T thất bại: {res.stderr}")
     issues = []
     for line in res.stdout.splitlines()[1:]:
         parts = line.split()

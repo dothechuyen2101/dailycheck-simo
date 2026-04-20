@@ -14,7 +14,14 @@ from src import scheduler as sched_module
 
 load_config()
 
-app = Flask(__name__, template_folder="templates")
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+app = Flask(
+    __name__,
+    template_folder="templates",
+    static_folder=str(BASE_DIR / "static"),
+    static_url_path="/static",
+)
 app.secret_key = get("dashboard.secret_key", "dev-secret-key")
 
 logger = logging.getLogger("dailycheck.dashboard")
