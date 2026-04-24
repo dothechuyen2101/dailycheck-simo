@@ -465,6 +465,7 @@ docker-compose up --build
 
 docker pull python:3.11-slim
 docker save python:3.11-slim -o python311.tar
+docker save simo-dailycheck:1.0 -o simo-dailycheck:1.0.tar
 
 docker load -i python311.tar
 docker run -d -p 5000:5000 simo-dailycheck:1.0

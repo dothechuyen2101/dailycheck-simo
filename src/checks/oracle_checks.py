@@ -430,9 +430,4 @@ def run_all(alert_manager=None) -> List[CheckResult]:
             logger.exception(f"Oracle: lỗi không xác định trên {host_name}")
             results.append(_err(host_name, "Lỗi không xác định", str(e)))
 
-        # Gửi alert ngay nếu có bất thường
-        if alert_manager:
-            for r in results:
-                alert_manager.alert(r)
-
     return results

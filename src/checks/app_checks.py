@@ -155,8 +155,5 @@ def run_all(alert_manager=None) -> List[CheckResult]:
                 batch.append(_err(app_name, host_name, "Lỗi không xác định", str(e)))
 
             results.extend(batch)
-            if alert_manager:
-                for r in batch:
-                    alert_manager.alert(r)
 
     return results

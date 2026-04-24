@@ -26,6 +26,7 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
     date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
     overall_color = STATUS_COLOR.get(summary.overall_status, "#6c757d")
     overall_label = STATUS_LABEL.get(summary.overall_status, summary.overall_status)
+    issue_results = [r for r in results if r.status != "OK"]
 
     # Nhóm kết quả theo system
     systems: dict[str, list] = {}
@@ -53,6 +54,27 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
             <td style="padding:6px 12px;font-size:11px;color:#888;">{r.checked_at[11:19]}</td>
         </tr>"""
 
+    issue_rows_html = ""
+    if issue_results:
+        for r in issue_results:
+            color = STATUS_COLOR.get(r.status, "#6c757d")
+            label = STATUS_LABEL.get(r.status, r.status)
+            issue_rows_html += f"""
+        <tr>
+          <td style="padding:8px 12px;">{r.system}</td>
+          <td style="padding:8px 12px;color:#555;">{r.host}</td>
+          <td style="padding:8px 12px;">{r.check_name}</td>
+          <td style="padding:8px 12px;font-weight:bold;color:{color};">{label}</td>
+          <td style="padding:8px 12px;font-size:12px;">{r.message}</td>
+        </tr>"""
+    else:
+        issue_rows_html = """
+        <tr>
+          <td colspan="5" style="padding:12px;text-align:center;color:#28a745;font-weight:bold;">
+            Không có cảnh báo hoặc lỗi trong lần chạy này.
+          </td>
+        </tr>"""
+
     html = f"""<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -68,6 +90,9 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
   .header p  {{ margin:4px 0 0; opacity:.85; font-size:14px; }}
   .summary {{ display:flex; padding:16px 32px; background:#fafafa;
               border-bottom:1px solid #e9ecef; gap:24px; flex-wrap:wrap; }}
+  .section {{ padding:24px 32px 8px; }}
+  .section h2 {{ margin:0 0 12px; font-size:18px; color:#212529; }}
+  .section p {{ margin:0; font-size:13px; color:#666; }}
   .stat {{ text-align:center; }}
   .stat .num {{ font-size:28px; font-weight:bold; }}
   .stat .lbl {{ font-size:12px; color:#666; }}
@@ -98,6 +123,31 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
       <div class="num" style="font-size:14px;margin-top:4px;">{summary.started_at[11:16]} → {summary.finished_at[11:16] if summary.finished_at else '--:--'}</div>
       <div class="lbl">Thời gian thực hiện</div>
     </div>
+  </div>
+
+  <div class="section">
+    <h2>Tóm tắt bất thường</h2>
+    <p>Phần này gom toàn bộ cảnh báo, lỗi nghiêm trọng và lỗi kết nối trong một email duy nhất cho mỗi lần chạy.</p>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Hệ thống</th>
+        <th>Host</th>
+        <th>Nội dung kiểm tra</th>
+        <th>Kết quả</th>
+        <th>Chi tiết</th>
+      </tr>
+    </thead>
+    <tbody>
+      {issue_rows_html}
+    </tbody>
+  </table>
+
+  <div class="section">
+    <h2>Chi tiết đầy đủ</h2>
+    <p>Tất cả kết quả kiểm tra của lần chạy này được liệt kê dưới đây.</p>
   </div>
 
   <table>

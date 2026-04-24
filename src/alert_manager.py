@@ -1,6 +1,5 @@
 """
-Alert Manager – Gửi cảnh báo qua Email và Webhook (Slack/Teams).
-Tích hợp cơ chế chống spam: mỗi (system, host, check_name) chỉ alert 1 lần/ngày.
+Alert Manager – Gửi một báo cáo tổng hợp cho mỗi lần chạy Daily Check.
 """
 import json
 import logging
@@ -70,23 +69,13 @@ class AlertManager:
         return True
 
     def alert(self, r: CheckResult):
-        """Gửi alert nếu thoả điều kiện."""
-        if not self.should_alert(r):
-            return
-        emoji = STATUS_EMOJI.get(r.status, "❗")
-        subject = f"[SIMO DailyCheck] {emoji} {r.status}: {r.system} – {r.check_name}"
-        body = (
-            f"**Hệ thống:** {r.system}\n"
-            f"**Host:** {r.host}\n"
-            f"**Kiểm tra:** {r.check_name}\n"
-            f"**Trạng thái:** {r.status}\n"
-            f"**Thông báo:** {r.message}\n"
-            f"**Thời gian:** {r.checked_at}\n"
+        """Giữ tương thích ngược; không gửi alert riêng lẻ nữa."""
+        logger.info(
+            "Per-result alert suppressed for %s/%s/%s; consolidated report mode is enabled.",
+            r.system,
+            r.host,
+            r.check_name,
         )
-        if self.email_cfg.get("enabled"):
-            self._send_email(subject, body)
-        if self.webhook_cfg.get("enabled"):
-            self._send_webhook(subject, body)
 
     def send_report(self, subject: str, html_body: str):
         """Gửi báo cáo tổng hợp HTML (không chống spam)."""

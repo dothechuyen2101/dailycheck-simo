@@ -58,7 +58,7 @@ def run_daily_check() -> RunSummary:
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(modules))) as executor:
         futures = {
-            executor.submit(fn, alert_mgr): name
+            executor.submit(fn): name
             for name, fn in modules
         }
         for future in as_completed(futures):

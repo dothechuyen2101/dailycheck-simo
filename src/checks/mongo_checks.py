@@ -101,8 +101,4 @@ def run_all(alert_manager=None) -> List[CheckResult]:
             logger.exception(f"MongoDB: lỗi trên {host_name}")
             results.append(_err(host_name, "Lỗi không xác định", str(e)))
 
-        if alert_manager:
-            for r in results[-3:]:
-                alert_manager.alert(r)
-
     return results
