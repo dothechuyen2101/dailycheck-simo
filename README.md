@@ -197,9 +197,14 @@ notifications:
   email:
     enabled: true
     smtp_host: "smtp.company.com"
+    smtp_connect_host: ""   # Optional: IP/host actually used to connect if DNS for smtp_host is unavailable
     smtp_port: 587
+    smtp_use_tls: true      # STARTTLS on plain SMTP ports like 587
+    smtp_use_ssl: false     # Implicit SSL, typically port 465
     sender: "dailycheck@company.com"
+    username: "dailycheck@company.com"   # Optional: login name if different from sender
     password: "CHANGE_ME"
+    smtp_require_auth: true # Set false for internal relay servers that do not support AUTH
     recipients:
       - "ops@company.com"
 
@@ -463,4 +468,3 @@ docker save python:3.11-slim -o python311.tar
 
 docker load -i python311.tar
 docker run -d -p 5000:5000 simo-dailycheck:1.0
-
