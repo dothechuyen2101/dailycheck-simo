@@ -126,7 +126,7 @@ simo_dailycheck/
 │   ├── logger.py            # Logging setup + SQLite ResultStore
 │   ├── ssh_manager.py       # SSH connection pool (Paramiko)
 │   ├── orchestrator.py      # Điều phối chạy song song + tổng hợp kết quả
-│   ├── scheduler.py         # APScheduler CronTrigger (8:00 Mon-Fri)
+│   ├── scheduler.py         # APScheduler CronTrigger (8:00 daily)
 │   ├── alert_manager.py     # Gửi email/webhook, chống spam
 │   ├── report_generator.py  # Tạo HTML report cho email
 │   │
@@ -170,7 +170,7 @@ python main.py
     ├─ load_config()         # Đọc config/config.yaml
     ├─ setup_logging()       # Cấu hình logging + file log
     │
-    ├─ start_scheduler()     # APScheduler: cron Mon-Fri 08:00
+    ├─ start_scheduler()     # APScheduler: cron daily 08:00
     │
     └─ Flask dashboard       # Chạy trong daemon thread
         http://0.0.0.0:5000
@@ -342,7 +342,6 @@ def run_daily_check() -> RunSummary:
 ```python
 # APScheduler BackgroundScheduler
 trigger = CronTrigger(
-    day_of_week="mon-fri",
     hour=8, minute=0,
     timezone="Asia/Ho_Chi_Minh",
     misfire_grace_time=300,  # Cho phép trễ 5 phút
@@ -540,7 +539,6 @@ def _job_wrapper():
 scheduler = BackgroundScheduler(timezone="Asia/Ho_Chi_Minh")
 
 trigger = CronTrigger(
-    day_of_week="mon-fri",  # Thứ 2 đến thứ 6
     hour=8,
     minute=0,
 )

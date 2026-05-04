@@ -22,7 +22,7 @@ python main.py --config path.yaml   # custom config file
 - Overall status: CRITICAL if any CRITICAL/ERROR, else WARNING if any WARNING, else OK
 
 ## Scheduler
-- APScheduler `CronTrigger`, runs mon-fri at `general.check_time` (default "08:00")
+- APScheduler `CronTrigger`, runs every day at `general.check_time` (default "08:00")
 - Prep time `general.prep_time` ("07:55") is for SSH connection warming only
 - Misfire grace time: 300s; skip new trigger if previous run still active
 

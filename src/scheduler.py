@@ -1,5 +1,5 @@
 """
-Scheduler – APScheduler chạy Daily Check tự động lúc 08:00 ngày làm việc.
+Scheduler – APScheduler chạy Daily Check tự động theo giờ cấu hình mỗi ngày.
 Hỗ trợ trigger thủ công qua API.
 """
 import logging
@@ -45,9 +45,8 @@ def start_scheduler():
 
     _scheduler = BackgroundScheduler(timezone=timezone)
 
-    # Chạy vào giờ cấu hình, thứ 2 – thứ 6
+    # Chạy vào giờ cấu hình mỗi ngày
     trigger = CronTrigger(
-        day_of_week="mon-fri",
         hour=int(hour),
         minute=int(minute),
         timezone=timezone,
@@ -61,7 +60,7 @@ def start_scheduler():
         misfire_grace_time=300,  # Cho phép trễ tối đa 5 phút
     )
     _scheduler.start()
-    logger.info(f"Scheduler đã khởi động – chạy {check_time} mỗi ngày làm việc ({timezone})")
+    logger.info(f"Scheduler đã khởi động – chạy {check_time} mỗi ngày ({timezone})")
 
 
 def stop_scheduler():
