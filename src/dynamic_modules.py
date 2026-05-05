@@ -578,17 +578,90 @@ def _make_result(system: str, host: str, check_name: str, status: str, message: 
     )
 
 
+def _sanitize_value(value: str) -> str:
+    """Sanitize a value to prevent command injection."""
+    if not value:
+        return ""
+    
+    # Remove dangerous characters that could lead to command injection
+    dangerous_chars = [';', '&', '|', '`', '$', '(', ')', '<', '>', '"', "'", '\\']
+    for char in dangerous_chars:
+        value = value.replace(char, ' ')  # Replace with space to preserve word boundaries
+    
+    # Allow only alphanumeric, spaces, hyphens, underscores, dots, and forward slashes
+    import re
+    sanitized = re.sub(r'[^a-zA-Z0-9\s\-_./]', '', value)
+    
+    # Clean up multiple spaces and remove leading/trailing whitespace
+    sanitized = re.sub(r'\s+', ' ', sanitized).strip()
+    
+    return sanitized
+
+
+def _validate_command_template(command: str) -> None:
+    """Validate command template for dangerous patterns."""
+    import re
+    
+    # Check for dangerous command patterns
+    dangerous_patterns = [
+        r'\$\(',           # Command substitution
+        r'`.*?`',          # Backtick command substitution
+        r'&&\s*\w',        # Command chaining
+        r'\|\|\s*\w',      # Command chaining
+        r';\s*\w',         # Command chaining
+        r'>\s*/dev/',      # Redirecting to system devices
+        r'<\s*/etc/',      # Reading system files
+        r'rm\s+-rf\s+/',   # Dangerous file operations
+        r'sudo\s+',        # Privilege escalation
+        r'su\s+',          # Privilege escalation
+    ]
+    
+    for pattern in dangerous_patterns:
+        if re.search(pattern, command, re.IGNORECASE):
+            raise ValueError(f"Dangerous command pattern detected: {pattern}")
+
+
+def _validate_and_sanitize_context(context: dict) -> dict:
+    """Validate and sanitize all context variables."""
+    sanitized_context = {}
+    
+    for key, value in context.items():
+        if value is None:
+            sanitized_context[key] = ""
+        else:
+            str_value = str(value)
+            sanitized_context[key] = _sanitize_value(str_value)
+    
+    return sanitized_context
+
+
 def _render_command(command: str, module: DynamicModule, host: DynamicModuleHost) -> str:
-    rendered = command
+    """Render command template with validated and sanitized variables."""
+    # Validate the command template first
+    _validate_command_template(command)
+    
+    # Build context with built-in variables
     context = {
         "host_name": host.name,
         "host_ip": host.ip,
         "module_name": module.name,
         "system_name": module.system_name,
     }
+    
+    # Add host variables (convert all to strings)
     context.update({str(key): str(value) for key, value in host.variables.items()})
-    for key, value in context.items():
+    
+    # Validate and sanitize all context values
+    sanitized_context = _validate_and_sanitize_context(context)
+    
+    # Replace template variables with sanitized values
+    rendered = command
+    for key, value in sanitized_context.items():
         rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    
+    # Final validation of the rendered command
+    _validate_command_template(rendered)
+    
     return rendered
 
 
