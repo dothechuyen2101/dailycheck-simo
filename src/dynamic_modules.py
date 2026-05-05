@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sqlite3
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
 
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+TEMPLATE_VAR_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+SAFE_VALUE_PUNCTUATION = set(" ._-/@:+=,")
+DISALLOWED_VALUE_CHARS = set(";&|`$()<>\"'\\\r\n\t")
 
 
 @dataclass
@@ -278,6 +282,11 @@ def validate_module_payload(payload: dict[str, Any], existing: Optional[DynamicM
             errors.append(f"step #{index}: name is required")
         if not command:
             errors.append(f"step #{index}: command is required")
+        else:
+            try:
+                _validate_command_template(command)
+            except ValueError as exc:
+                errors.append(f"step #{index}: invalid command: {exc}")
         if timeout_sec <= 0:
             errors.append(f"step #{index}: timeout_sec must be > 0")
         if normalized_rules["nonzero_exit_status"] not in {"ERROR", "WARNING", "CRITICAL"}:
@@ -579,46 +588,43 @@ def _make_result(system: str, host: str, check_name: str, status: str, message: 
 
 
 def _sanitize_value(value: str) -> str:
-    """Sanitize a value to prevent command injection."""
-    if not value:
+    """Validate a template value and return a normalized safe string."""
+    if value is None:
         return ""
-    
-    # Remove dangerous characters that could lead to command injection
-    dangerous_chars = [';', '&', '|', '`', '$', '(', ')', '<', '>', '"', "'", '\\']
-    for char in dangerous_chars:
-        value = value.replace(char, ' ')  # Replace with space to preserve word boundaries
-    
-    # Allow only alphanumeric, spaces, hyphens, underscores, dots, and forward slashes
-    import re
-    sanitized = re.sub(r'[^a-zA-Z0-9\s\-_./]', '', value)
-    
-    # Clean up multiple spaces and remove leading/trailing whitespace
-    sanitized = re.sub(r'\s+', ' ', sanitized).strip()
-    
+
+    sanitized = str(value).strip()
+    if not sanitized:
+        return ""
+
+    for char in sanitized:
+        if char in DISALLOWED_VALUE_CHARS:
+            raise ValueError(f"contains disallowed character {char!r}")
+        category = unicodedata.category(char)
+        if char.isalnum() or category.startswith("M") or char in SAFE_VALUE_PUNCTUATION:
+            continue
+        raise ValueError(
+            f"contains unsupported character {char!r}; only letters, digits, spaces, and . _ - / @ : + = , are allowed"
+        )
+
     return sanitized
 
 
 def _validate_command_template(command: str) -> None:
     """Validate command template for dangerous patterns."""
-    import re
-    
-    # Check for dangerous command patterns
+
     dangerous_patterns = [
-        r'\$\(',           # Command substitution
-        r'`.*?`',          # Backtick command substitution
-        r'&&\s*\w',        # Command chaining
-        r'\|\|\s*\w',      # Command chaining
-        r';\s*\w',         # Command chaining
-        r'>\s*/dev/',      # Redirecting to system devices
-        r'<\s*/etc/',      # Reading system files
-        r'rm\s+-rf\s+/',   # Dangerous file operations
-        r'sudo\s+',        # Privilege escalation
-        r'su\s+',          # Privilege escalation
+        (r"\$\(", "command substitution '$(' is not allowed"),
+        (r"`", "backtick command substitution is not allowed"),
+        (r"[\r\n\x00]", "control characters are not allowed"),
+        (r"(?<!\S)sudo(?=\s|$)", "sudo is not allowed in dynamic module commands"),
+        (r"(?<!\S)su(?=\s|$)", "su is not allowed in dynamic module commands"),
+        (r"(?<!\S)rm\s+-rf\s+/(?:\s|$)", "destructive root deletion is not allowed"),
+        (r">\s*/dev/(?!null\b)", "redirecting output to device files is not allowed"),
     ]
-    
-    for pattern in dangerous_patterns:
+
+    for pattern, message in dangerous_patterns:
         if re.search(pattern, command, re.IGNORECASE):
-            raise ValueError(f"Dangerous command pattern detected: {pattern}")
+            raise ValueError(message)
 
 
 def _validate_and_sanitize_context(context: dict) -> dict:
@@ -629,8 +635,10 @@ def _validate_and_sanitize_context(context: dict) -> dict:
         if value is None:
             sanitized_context[key] = ""
         else:
-            str_value = str(value)
-            sanitized_context[key] = _sanitize_value(str_value)
+            try:
+                sanitized_context[key] = _sanitize_value(str(value))
+            except ValueError as exc:
+                raise ValueError(f"Invalid value for '{key}': {exc}") from exc
     
     return sanitized_context
 
@@ -654,10 +662,15 @@ def _render_command(command: str, module: DynamicModule, host: DynamicModuleHost
     # Validate and sanitize all context values
     sanitized_context = _validate_and_sanitize_context(context)
     
-    # Replace template variables with sanitized values
-    rendered = command
-    for key, value in sanitized_context.items():
-        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    template_vars = set(TEMPLATE_VAR_RE.findall(command))
+    missing_vars = sorted(var for var in template_vars if var not in sanitized_context)
+    if missing_vars:
+        raise ValueError(f"Missing template variable(s): {', '.join(missing_vars)}")
+
+    def replace_var(match: re.Match[str]) -> str:
+        return sanitized_context[match.group(1)]
+
+    rendered = TEMPLATE_VAR_RE.sub(replace_var, command)
     
     # Final validation of the rendered command
     _validate_command_template(rendered)

@@ -147,6 +147,39 @@ class DynamicModuleTests(unittest.TestCase):
         self.assertEqual(normalized["template_key"], "mongodb")
         self.assertEqual(normalized["hosts"][0]["variables"]["service_name"], "mongod")
 
+    def test_validate_rejects_dangerous_step_command_with_clear_error(self):
+        payload = {
+            "name": "Unsafe Module",
+            "system_name": "Custom",
+            "template_key": "custom",
+            "enabled": True,
+            "timezone": "Asia/Ho_Chi_Minh",
+            "daily_time": "08:00",
+            "recipient_emails": ["ops@example.com"],
+            "hosts": [
+                {
+                    "name": "host-1",
+                    "ip": "10.0.0.2",
+                    "port": 22,
+                    "username": "root",
+                    "auth_type": "password",
+                    "password": "secret123",
+                }
+            ],
+            "steps": [
+                {
+                    "name": "Unsafe",
+                    "command": "$(whoami)",
+                    "timeout_sec": 10,
+                    "run_on_each_host": True,
+                    "rules": {},
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "step #1: invalid command: command substitution"):
+            validate_module_payload(payload)
+
     def test_run_module_checks_does_not_reconnect_failed_host_per_step(self):
         module = DynamicModule(
             id=1,
