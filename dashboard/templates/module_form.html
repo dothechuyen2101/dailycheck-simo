@@ -1,0 +1,343 @@
+{% extends "base.html" %}
+{% block title %}Module Editor – SIMO Daily Check{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h5 class="fw-bold mb-0">{{ 'Edit Module' if module else 'Create Module' }}</h5>
+    <small class="text-muted">Configure hosts, steps, schedule, and recipients.</small>
+  </div>
+  <a href="/modules" class="btn btn-outline-secondary btn-sm">← Back</a>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card">
+      <div class="card-body">
+        <div id="formError" class="alert alert-danger d-none"></div>
+        <form id="moduleForm">
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Module name</label>
+              <input class="form-control" id="name" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">System name</label>
+              <input class="form-control" id="system_name" required>
+            </div>
+            <div class="col-md-8">
+              <label class="form-label">Static template</label>
+              <select class="form-select" id="template_key" {% if module %}disabled{% endif %}>
+                <option value="custom">Custom</option>
+                <option value="oracle">Oracle</option>
+                <option value="mongodb">MongoDB</option>
+                <option value="hadoop">Hadoop</option>
+                <option value="application">Application</option>
+              </select>
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+              {% if not module %}
+              <button class="btn btn-outline-primary w-100" type="button" onclick="applyTemplate()">Load template steps</button>
+              {% else %}
+              <small class="text-muted">Template type is fixed after creation.</small>
+              {% endif %}
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Daily time</label>
+              <input class="form-control" id="daily_time" placeholder="08:00" required>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Timezone</label>
+              <input class="form-control" id="timezone" value="{{ default_timezone }}" required>
+            </div>
+            <div class="col-md-4 d-flex align-items-end">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="enabled" checked>
+                <label class="form-check-label" for="enabled">Enabled</label>
+              </div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Recipients</label>
+              <input class="form-control" id="recipient_emails" placeholder="ops@example.com, admin@example.com">
+            </div>
+          </div>
+
+          <hr>
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="mb-0">Hosts</h6>
+            <button class="btn btn-outline-secondary btn-sm" type="button" onclick="addHost()">+ Add Host</button>
+          </div>
+          <div id="hosts"></div>
+
+          <hr>
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="mb-0">Steps</h6>
+            <button class="btn btn-outline-secondary btn-sm" type="button" onclick="addStep()">+ Add Step</button>
+          </div>
+          <div id="steps"></div>
+
+          <div class="d-flex gap-2 mt-4">
+            <button class="btn btn-primary" type="submit">Save Module</button>
+            {% if module %}
+            <button class="btn btn-outline-success" type="button" onclick="triggerModule()">Run Now</button>
+            <button class="btn btn-outline-danger" type="button" onclick="deleteModule()">Delete</button>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    {% if module %}
+    <div class="card mb-4">
+      <div class="card-header fw-bold">Recent Runs</div>
+      <div class="list-group list-group-flush">
+        {% for run in module_runs %}
+        <a class="list-group-item list-group-item-action" href="/run/{{ run.run_id }}">
+          <div class="d-flex justify-content-between">
+            <strong>{{ run.overall_status }}</strong>
+            <small>{{ run.started_at[:19].replace('T', ' ') }}</small>
+          </div>
+          <small class="text-muted">{{ run.total_checks }} checks</small>
+        </a>
+        {% else %}
+        <div class="list-group-item text-muted">No runs yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-header fw-bold">Rule Notes</div>
+      <div class="card-body small text-muted">
+        Non-zero exit status maps to `ERROR`, `WARNING`, or `CRITICAL`.
+        Critical keywords override warning keywords.
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const moduleData = {{ module_json|safe }};
+const moduleTemplates = {{ module_templates|safe }};
+const moduleId = {{ module.id if module else 'null' }};
+
+function hostBlock(host = {}) {
+  const variableEntries = Object.entries(host.variables || {});
+  const variableRows = variableEntries.length
+    ? variableEntries.map(([key, value]) => `
+        <div class="col-md-6">
+          <label class="form-label small text-muted mb-1">${key}</label>
+          <input class="form-control host-var" data-var-key="${key}" placeholder="${key}" value="${value || ''}">
+        </div>
+      `).join('')
+    : '<div class="col-12"><small class="text-muted">No host variables for this template.</small></div>';
+  return `
+    <div class="border rounded p-3 mb-3 host-item" data-host-id="${host.id || ''}">
+      <div class="row g-2">
+        <div class="col-md-4"><input class="form-control host-name" placeholder="Host name" value="${host.name || ''}"></div>
+        <div class="col-md-4"><input class="form-control host-ip" placeholder="IP" value="${host.ip || ''}"></div>
+        <div class="col-md-4"><input class="form-control host-port" placeholder="Port" value="${host.port || 22}"></div>
+        <div class="col-md-4"><input class="form-control host-username" placeholder="Username" value="${host.username || ''}"></div>
+        <div class="col-md-4">
+          <select class="form-select host-auth-type" onchange="toggleHostAuth(this)">
+            <option value="password" ${(host.auth_type || 'password') === 'password' ? 'selected' : ''}>Password</option>
+            <option value="key" ${(host.auth_type || 'password') === 'key' ? 'selected' : ''}>SSH Key</option>
+          </select>
+        </div>
+        <div class="col-md-4 text-end"><button class="btn btn-outline-danger btn-sm" type="button" onclick="this.closest('.host-item').remove()">Remove</button></div>
+        <div class="col-md-6 host-password-wrap">
+          <input class="form-control host-password" type="password" placeholder="${host.has_password ? 'Leave blank to keep saved password' : 'Password'}">
+        </div>
+        <div class="col-md-6 host-key-wrap d-none">
+          <input class="form-control host-key-path" placeholder="~/.ssh/id_rsa" value="${host.key_path || ''}">
+        </div>
+        <div class="col-12 mt-2">
+          <div class="border-top pt-2">
+            <div class="small fw-bold mb-2">Template variables</div>
+            <div class="row g-2 host-variables">${variableRows}</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function stepBlock(step = {}) {
+  const rules = step.rules || {};
+  return `
+    <div class="border rounded p-3 mb-3 step-item" data-step-id="${step.id || ''}">
+      <div class="row g-2">
+        <div class="col-md-4"><input class="form-control step-name" placeholder="Step name" value="${step.name || ''}"></div>
+        <div class="col-md-3"><input class="form-control step-timeout" placeholder="Timeout" value="${step.timeout_sec || 60}"></div>
+        <div class="col-md-3">
+          <select class="form-select step-nonzero">
+            ${['ERROR','WARNING','CRITICAL'].map(v => `<option value="${v}" ${((rules.nonzero_exit_status || 'ERROR') === v) ? 'selected' : ''}>${v} on non-zero</option>`).join('')}
+          </select>
+        </div>
+        <div class="col-md-2 text-end"><button class="btn btn-outline-danger btn-sm" type="button" onclick="this.closest('.step-item').remove()">Remove</button></div>
+        <div class="col-12"><textarea class="form-control step-command" rows="2" placeholder="Command">${step.command || ''}</textarea></div>
+        <div class="col-md-4"><input class="form-control step-warning" placeholder="warning keywords, comma separated" value="${(rules.warning_keywords || []).join(', ')}"></div>
+        <div class="col-md-4"><input class="form-control step-critical" placeholder="critical keywords, comma separated" value="${(rules.critical_keywords || []).join(', ')}"></div>
+        <div class="col-md-4 d-flex align-items-center">
+          <div class="form-check mt-2">
+            <input class="form-check-input step-each-host" type="checkbox" ${step.run_on_each_host !== false ? 'checked' : ''}>
+            <label class="form-check-label">Run on each host</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <small class="text-muted">Use placeholders like <code>${'{{instance_name}}'}</code>, <code>${'{{service_name}}'}</code>, <code>${'{{is_namenode}}'}</code>.</small>
+        </div>
+      </div>
+    </div>`;
+}
+
+function addHost(host = {}) {
+  if (!Object.keys(host.variables || {}).length) {
+    const templateKey = document.getElementById('template_key') ? document.getElementById('template_key').value : 'custom';
+    const template = moduleTemplates[templateKey] || moduleTemplates.custom || {host_variable_help: []};
+    host.variables = {};
+    (template.host_variable_help || []).forEach(key => {
+      host.variables[key] = '';
+    });
+  }
+  document.getElementById('hosts').insertAdjacentHTML('beforeend', hostBlock(host));
+  toggleAllHostAuth();
+}
+
+function addStep(step = {}) {
+  document.getElementById('steps').insertAdjacentHTML('beforeend', stepBlock(step));
+}
+
+function toggleHostAuth(select) {
+  const wrap = select.closest('.host-item');
+  const isKey = select.value === 'key';
+  wrap.querySelector('.host-password-wrap').classList.toggle('d-none', isKey);
+  wrap.querySelector('.host-key-wrap').classList.toggle('d-none', !isKey);
+}
+
+function toggleAllHostAuth() {
+  document.querySelectorAll('.host-auth-type').forEach(toggleHostAuth);
+}
+
+function loadForm() {
+  if (!moduleData) {
+    document.getElementById('template_key').value = 'custom';
+    addHost({variables: {}});
+    addStep();
+    return;
+  }
+  document.getElementById('name').value = moduleData.name || '';
+  document.getElementById('system_name').value = moduleData.system_name || '';
+  document.getElementById('template_key').value = moduleData.template_key || 'custom';
+  document.getElementById('daily_time').value = moduleData.daily_time || '';
+  document.getElementById('timezone').value = moduleData.timezone || '';
+  document.getElementById('recipient_emails').value = (moduleData.recipient_emails || []).join(', ');
+  document.getElementById('enabled').checked = !!moduleData.enabled;
+  (moduleData.hosts || []).forEach(addHost);
+  (moduleData.steps || []).forEach(addStep);
+}
+
+function buildVariableMap(item) {
+  const vars = {};
+  item.querySelectorAll('.host-var').forEach(input => {
+    vars[input.dataset.varKey] = input.value.trim();
+  });
+  return vars;
+}
+
+async function applyTemplate(force = false) {
+  if (moduleId) return;
+  const templateKey = document.getElementById('template_key').value;
+  if (!force && (document.querySelectorAll('.step-item').length || document.querySelectorAll('.host-item').length)) {
+    if (!confirm('Replace current host/step draft with the selected template?')) return;
+  }
+  const res = await fetch(`/api/module-templates/${templateKey}`);
+  const data = await res.json();
+  if (!res.ok) return;
+  if (!document.getElementById('system_name').value.trim()) {
+    document.getElementById('system_name').value = data.system_name || '';
+  } else {
+    document.getElementById('system_name').value = data.system_name || document.getElementById('system_name').value.trim();
+  }
+  const hosts = document.getElementById('hosts');
+  const steps = document.getElementById('steps');
+  hosts.innerHTML = '';
+  steps.innerHTML = '';
+  (data.hosts || [{variables: {}}]).forEach(addHost);
+  (data.steps || []).forEach(addStep);
+}
+
+function collectPayload() {
+  return {
+    name: document.getElementById('name').value.trim(),
+    system_name: document.getElementById('system_name').value.trim(),
+    template_key: document.getElementById('template_key').value,
+    daily_time: document.getElementById('daily_time').value.trim(),
+    timezone: document.getElementById('timezone').value.trim(),
+    enabled: document.getElementById('enabled').checked,
+    recipient_emails: document.getElementById('recipient_emails').value.split(',').map(v => v.trim()).filter(Boolean),
+    hosts: Array.from(document.querySelectorAll('.host-item')).map(item => ({
+      id: item.dataset.hostId ? Number(item.dataset.hostId) : null,
+      name: item.querySelector('.host-name').value.trim(),
+      ip: item.querySelector('.host-ip').value.trim(),
+      port: Number(item.querySelector('.host-port').value || 22),
+      username: item.querySelector('.host-username').value.trim(),
+      auth_type: item.querySelector('.host-auth-type').value,
+      password: item.querySelector('.host-password') ? item.querySelector('.host-password').value : '',
+      key_path: item.querySelector('.host-key-path') ? item.querySelector('.host-key-path').value.trim() : '',
+      variables: buildVariableMap(item)
+    })),
+    steps: Array.from(document.querySelectorAll('.step-item')).map(item => ({
+      id: item.dataset.stepId ? Number(item.dataset.stepId) : null,
+      name: item.querySelector('.step-name').value.trim(),
+      command: item.querySelector('.step-command').value,
+      timeout_sec: Number(item.querySelector('.step-timeout').value || 60),
+      run_on_each_host: item.querySelector('.step-each-host').checked,
+      rules: {
+        nonzero_exit_status: item.querySelector('.step-nonzero').value,
+        warning_keywords: item.querySelector('.step-warning').value.split(',').map(v => v.trim()).filter(Boolean),
+        critical_keywords: item.querySelector('.step-critical').value.split(',').map(v => v.trim()).filter(Boolean)
+      }
+    }))
+  };
+}
+
+async function saveModule(event) {
+  event.preventDefault();
+  const method = moduleId ? 'PUT' : 'POST';
+  const url = moduleId ? `/api/modules/${moduleId}` : '/api/modules';
+  const res = await fetch(url, {
+    method,
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(collectPayload())
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const box = document.getElementById('formError');
+    box.textContent = data.error || 'Save failed';
+    box.classList.remove('d-none');
+    return;
+  }
+  window.location.href = `/modules/${data.id}/edit`;
+}
+
+async function triggerModule() {
+  const res = await fetch(`/api/modules/${moduleId}/trigger`, {method: 'POST'});
+  const data = await res.json();
+  alert(data.message || data.error || 'Triggered');
+  location.reload();
+}
+
+async function deleteModule() {
+  if (!confirm('Delete this module?')) return;
+  const res = await fetch(`/api/modules/${moduleId}`, {method: 'DELETE'});
+  if (res.ok) window.location.href = '/modules';
+}
+
+document.getElementById('moduleForm').addEventListener('submit', saveModule);
+loadForm();
+</script>
+{% endblock %}

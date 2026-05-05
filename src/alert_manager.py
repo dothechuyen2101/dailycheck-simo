@@ -77,16 +77,16 @@ class AlertManager:
             r.check_name,
         )
 
-    def send_report(self, subject: str, html_body: str):
+    def send_report(self, subject: str, html_body: str, recipients: list[str] | None = None):
         """Gửi báo cáo tổng hợp HTML (không chống spam)."""
         if self.email_cfg.get("enabled"):
-            self._send_email(subject, html_body, is_html=True)
+            self._send_email(subject, html_body, is_html=True, recipients=recipients)
 
-    def _send_email(self, subject: str, body: str, is_html: bool = False):
+    def _send_email(self, subject: str, body: str, is_html: bool = False, recipients: list[str] | None = None):
         cfg = self.email_cfg
         smtp_host = (cfg.get("smtp_host") or "").strip()
         smtp_connect_host = (cfg.get("smtp_connect_host") or smtp_host).strip()
-        recipients = cfg.get("recipients", [])
+        recipients = recipients or cfg.get("recipients", [])
         smtp_port = int(cfg.get("smtp_port", 587))
         smtp_timeout = float(cfg.get("smtp_timeout_sec", 15))
         username = (cfg.get("username") or cfg.get("sender") or "").strip()

@@ -11,6 +11,7 @@ from typing import List
 from src.config_manager import get
 from src.logger import CheckResult, RunSummary, ResultStore
 from src.alert_manager import AlertManager
+from src.dynamic_modules import DynamicModuleStore, run_module_checks
 from src.report_generator import generate_html_report, generate_subject
 import src.checks.oracle_checks as oracle_checks
 import src.checks.mongo_checks as mongo_checks
@@ -29,52 +30,16 @@ def _overall_status(results: List[CheckResult]) -> str:
     return "OK"
 
 
-def run_daily_check() -> RunSummary:
-    """
-    Entry point chính – chạy toàn bộ Daily Check.
-    Trả về RunSummary với đầy đủ kết quả.
-    """
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
-    started_at = datetime.now().isoformat()
-    logger.info(f"=== SIMO Daily Check bắt đầu – Run ID: {run_id} ===")
+def _new_run_id() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
 
+
+def _finalize_run(summary: RunSummary, all_results: List[CheckResult], recipients: list[str] | None = None) -> RunSummary:
     store = ResultStore()
     alert_mgr = AlertManager()
-    max_workers = get("general.max_workers", 10)
-
-    # Đăng ký run vào DB ngay
-    summary = RunSummary(run_id=run_id, started_at=started_at)
-    store.save_run(summary)
-
-    all_results: List[CheckResult] = []
-
-    # Chạy song song các module
-    modules = [
-        ("Oracle", oracle_checks.run_all),
-        ("MongoDB", mongo_checks.run_all),
-        ("Hadoop", hadoop_checks.run_all),
-        ("Application", app_checks.run_all),
-    ]
-
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(modules))) as executor:
-        futures = {
-            executor.submit(fn): name
-            for name, fn in modules
-        }
-        for future in as_completed(futures):
-            module_name = futures[future]
-            try:
-                results = future.result()
-                all_results.extend(results)
-                logger.info(f"Module [{module_name}] hoàn thành – {len(results)} checks")
-            except Exception as e:
-                logger.exception(f"Module [{module_name}] gặp lỗi nghiêm trọng: {e}")
-
-    # Lưu kết quả vào DB
     for r in all_results:
-        store.save_result(run_id, r)
+        store.save_result(summary.run_id, r)
 
-    # Tổng hợp
     finished_at = datetime.now().isoformat()
     ok_count = sum(1 for r in all_results if r.status == "OK")
     warning_count = sum(1 for r in all_results if r.status == "WARNING")
@@ -94,18 +59,73 @@ def run_daily_check() -> RunSummary:
     # Gửi báo cáo HTML
     html = generate_html_report(summary, all_results)
     subject = generate_subject(summary)
-    alert_mgr.send_report(subject, html)
+    alert_mgr.send_report(subject, html, recipients=recipients)
 
-    # Lưu báo cáo HTML vào file
-    _save_html_report(run_id, html)
+    _save_html_report(summary.run_id, html)
 
-    elapsed = (datetime.fromisoformat(finished_at) - datetime.fromisoformat(started_at)).seconds
+    elapsed = (datetime.fromisoformat(finished_at) - datetime.fromisoformat(summary.started_at)).seconds
     logger.info(
         f"=== Daily Check hoàn thành – {elapsed}s | "
         f"OK:{ok_count} WARN:{warning_count} CRIT:{critical_count} ERR:{error_count} "
         f"| Status: {summary.overall_status} ==="
     )
     return summary
+
+
+def run_daily_check() -> RunSummary:
+    """
+    Entry point chính – chạy toàn bộ Daily Check.
+    Trả về RunSummary với đầy đủ kết quả.
+    """
+    run_id = _new_run_id()
+    started_at = datetime.now().isoformat()
+    logger.info(f"=== SIMO Daily Check bắt đầu – Run ID: {run_id} ===")
+
+    store = ResultStore()
+    max_workers = get("general.max_workers", 10)
+    summary = RunSummary(run_id=run_id, started_at=started_at, run_type="builtin")
+    store.save_run(summary)
+
+    all_results: List[CheckResult] = []
+    modules = [
+        ("Oracle", oracle_checks.run_all),
+        ("MongoDB", mongo_checks.run_all),
+        ("Hadoop", hadoop_checks.run_all),
+        ("Application", app_checks.run_all),
+    ]
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(modules))) as executor:
+        futures = {executor.submit(fn): name for name, fn in modules}
+        for future in as_completed(futures):
+            module_name = futures[future]
+            try:
+                results = future.result()
+                all_results.extend(results)
+                logger.info(f"Module [{module_name}] hoàn thành – {len(results)} checks")
+            except Exception as e:
+                logger.exception(f"Module [{module_name}] gặp lỗi nghiêm trọng: {e}")
+
+    return _finalize_run(summary, all_results)
+
+
+def run_dynamic_module(module_id: int) -> RunSummary:
+    module_store = DynamicModuleStore()
+    module = module_store.get_module(module_id)
+    run_id = _new_run_id()
+    started_at = datetime.now().isoformat()
+    logger.info("=== Dynamic module bắt đầu – Module: %s | Run ID: %s ===", module.name, run_id)
+
+    summary = RunSummary(
+        run_id=run_id,
+        started_at=started_at,
+        run_type="dynamic_module",
+        module_id=module.id,
+        module_name=module.name,
+    )
+    ResultStore().save_run(summary)
+
+    results = run_module_checks(module)
+    return _finalize_run(summary, results, recipients=module.recipient_emails)
 
 
 def _save_html_report(run_id: str, html: str):

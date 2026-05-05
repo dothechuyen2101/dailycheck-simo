@@ -193,6 +193,9 @@ thresholds:
 ### 4.3. Thông báo Email/Webhook
 
 ```yaml
+security:
+  encryption_key: "CHANGE_ME_DYNAMIC_MODULE_SECRET"
+
 notifications:
   email:
     enabled: true
@@ -213,6 +216,14 @@ notifications:
     url: "https://hooks.slack.com/services/XXX"
 ```
 
+### 4.4. Dynamic Modules
+
+- Built-in Oracle, MongoDB, Hadoop, and Application checks remain file-configured.
+- New user-defined modules are managed from the dashboard and stored in SQLite.
+- Each dynamic module has `name`, `system_name`, `enabled`, `timezone`, `daily_time`, recipients, SSH hosts, ordered command steps, and per-step status rules.
+- Step status is determined by: critical keyword match, then warning keyword match, then non-zero exit handling, else OK.
+- Dynamic module SSH passwords are stored encrypted using `security.encryption_key`.
+
 ---
 
 ## 5. Chạy hệ thống
@@ -231,6 +242,7 @@ python main.py
 
 - Scheduler chạy tự động vào 8:00 sáng, Thứ 2-6
 - Dashboard web tại http://localhost:5000
+- Dynamic modules also get their own daily scheduler jobs based on each module's configured `daily_time`
 
 ### 5.3. Chạy riêng lẻ
 
@@ -269,6 +281,9 @@ Mở trình duyệt: http://localhost:5000
 |-------|-----|-------|
 | Trang chính | `/` | Danh sách các lần chạy |
 | Chi tiết | `/run/<run_id>` | Kết quả chi tiết từng bước kiểm tra |
+| Dynamic modules | `/modules` | Danh sách module do người dùng khai báo |
+| Tạo module | `/modules/new` | Tạo mới module động |
+| Sửa module | `/modules/<id>/edit` | Sửa hosts, steps, schedule, recipients |
 | Health check | `/api/status` | Trả về JSON trạng thái hệ thống |
 
 ### 6.3. API Endpoints
@@ -279,11 +294,28 @@ curl http://localhost:5000/api/status
 
 # Kết quả trả về
 {
-  "status": "ok",
-  "last_run": "2026-04-16T08:00:00",
-  "overall_status": "OK"
+  "is_running": false,
+  "latest_run": {
+    "run_id": "20260504_080000_abc123",
+    "run_type": "builtin",
+    "overall_status": "OK",
+    "started_at": "2026-05-04T08:00:00"
+  },
+  "server_time": "2026-05-04T08:05:30.123456"
 }
 ```
+
+Dynamic module APIs:
+
+| Route | Method | Mô tả |
+|-------|--------|-------|
+| `/api/modules` | GET | Danh sách dynamic modules + next run + last run |
+| `/api/modules` | POST | Tạo module mới |
+| `/api/modules/<id>` | GET | Chi tiết 1 module |
+| `/api/modules/<id>` | PUT | Cập nhật module |
+| `/api/modules/<id>` | DELETE | Xóa module |
+| `/api/modules/<id>/trigger` | POST | Trigger module ngay lập tức |
+| `/api/modules/<id>/runs` | GET | Lịch sử run của module |
 
 ### 6.4. Cấu hình port
 
@@ -319,6 +351,7 @@ tail -f logs/dailycheck_20260416.log
 sqlite3 data/dailycheck.db
 sqlite> .tables
 sqlite> SELECT * FROM check_results LIMIT 10;
+sqlite> SELECT run_id, run_type, module_name, overall_status FROM check_runs ORDER BY started_at DESC LIMIT 10;
 ```
 
 ---
@@ -397,18 +430,19 @@ grep -i error logs/dailycheck_20260416.log
 ### 9.4. Kiểm tra từng module
 
 ```bash
-# Test SSH connection
-python -c "from src.ssh_manager import SSHManager; s=SSHManager('10.1.36.11', 'oracle', key_path='~/.ssh/id_rsa'); print(s.connect())"
+# Chạy toàn bộ built-in checks ngay
+python3 main.py --run-now
 
-# Test Oracle checks
-python -c "from src.checks.oracle_checks import check_oracle; print(check_oracle())"
+# Chạy unit tests
+python3 -m unittest discover -s tests -v
 ```
 
 ### 9.5. Kiểm tra Database
 
 ```bash
 sqlite3 data/dailycheck.db
-sqlite> SELECT run_id, overall_status, created_at FROM runs ORDER BY created_at DESC LIMIT 5;
+sqlite> SELECT run_id, run_type, module_name, overall_status, started_at FROM check_runs ORDER BY started_at DESC LIMIT 5;
+sqlite> SELECT id, name, system_name, enabled, daily_time FROM dynamic_modules;
 ```
 
 ### 9.6. Reset môi trường

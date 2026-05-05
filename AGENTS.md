@@ -14,22 +14,28 @@ python main.py --config path.yaml   # custom config file
 - Loaded via `src.config_manager.load_config()` before any module imports
 - Access values: `from src.config_manager import get; get("general.ssh_timeout")`
 - Default paths expand `~` via `os.path.expanduser()`
+- Dynamic module password encryption key: `security.encryption_key`
 
 ## Architecture
 - 4 check modules run in **parallel** via `ThreadPoolExecutor`: Oracle, MongoDB, Hadoop, Application
 - `max_workers` defaults to 10, controlled by `general.max_workers`
 - Each module returns `List[CheckResult]`, aggregated in `orchestrator.py`
 - Overall status: CRITICAL if any CRITICAL/ERROR, else WARNING if any WARNING, else OK
+- Dynamic user-defined modules are stored in SQLite and run independently via `run_dynamic_module(module_id)`
+- Dynamic module steps are SSH command based and evaluated by exit code plus keyword rules
 
 ## Scheduler
 - APScheduler `CronTrigger`, runs every day at `general.check_time` (default "08:00")
 - Prep time `general.prep_time` ("07:55") is for SSH connection warming only
 - Misfire grace time: 300s; skip new trigger if previous run still active
+- Each enabled dynamic module has its own daily APScheduler job and per-module overlap protection
 
 ## Dashboard
 - Flask app on `dashboard.host:port` (default `0.0.0.0:5000`)
 - Healthcheck: `GET /api/status`
 - Uses secret key from `dashboard.secret_key`
+- Dynamic module UI: `/modules`, `/modules/new`, `/modules/<id>/edit`
+- Dynamic module API: `/api/modules`, `/api/modules/<id>`, `/api/modules/<id>/trigger`, `/api/modules/<id>/runs`
 
 ## Check Modules
 - `src/checks/oracle_checks.py` – 11 steps via SSH/sqlplus + optional cx_Oracle
@@ -41,11 +47,14 @@ python main.py --config path.yaml   # custom config file
 - SQLite DB: `data/dailycheck.db`
 - HTML reports saved: `data/reports/report_<run_id>.html`
 - Logs: `logs/` directory
+- Additional SQLite tables: `dynamic_modules`, `dynamic_module_hosts`, `dynamic_module_steps`
+- `check_runs` now includes `run_type`, `module_id`, and `module_name`
 
 ## Security
 - SSH key auth preferred; key path via `key_path` in host config
 - Passwords in config are placeholders (`CHANGE_ME`) – must be replaced for production
 - `.gitignore` excludes `config/config.yaml` and `data/`
+- Dynamic module SSH passwords are stored encrypted in SQLite and decrypted only at runtime
 
 ## Docker
 ```bash
@@ -56,7 +65,7 @@ docker-compose up --build
 - Healthcheck polls `/api/status` every 30s
 
 ## Testing
-- `tests/` directory exists but is **empty** – no test suite yet
+- Unit tests exist for dynamic module validation, encryption, and status rule evaluation
 - Manual verification: `python main.py --run-now`
 
 ## Key Thresholds (config/config.yaml)

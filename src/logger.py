@@ -54,6 +54,9 @@ class RunSummary:
     """Tổng hợp một lần chạy Daily Check."""
     run_id: str
     started_at: str
+    run_type: str = "builtin"
+    module_id: Optional[int] = None
+    module_name: str = ""
     finished_at: str = ""
     overall_status: str = "OK"   # OK / WARNING / CRITICAL
     total_checks: int = 0
@@ -83,6 +86,9 @@ class ResultStore:
                 CREATE TABLE IF NOT EXISTS check_runs (
                     run_id      TEXT PRIMARY KEY,
                     started_at  TEXT NOT NULL,
+                    run_type    TEXT NOT NULL DEFAULT 'builtin',
+                    module_id   INTEGER,
+                    module_name TEXT DEFAULT '',
                     finished_at TEXT,
                     overall_status TEXT DEFAULT 'OK',
                     total_checks   INTEGER DEFAULT 0,
@@ -123,6 +129,17 @@ class ResultStore:
                 CREATE INDEX IF NOT EXISTS idx_runs_started
                     ON check_runs(started_at);
             """)
+            self._ensure_column(conn, "check_runs", "run_type", "TEXT NOT NULL DEFAULT 'builtin'")
+            self._ensure_column(conn, "check_runs", "module_id", "INTEGER")
+            self._ensure_column(conn, "check_runs", "module_name", "TEXT DEFAULT ''")
+
+    def _ensure_column(self, conn, table: str, column: str, definition: str):
+        columns = {
+            row[1]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _conn(self):
         return sqlite3.connect(self.db_path)
@@ -131,11 +148,12 @@ class ResultStore:
         with self._conn() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO check_runs
-                    (run_id, started_at, finished_at, overall_status,
+                    (run_id, started_at, run_type, module_id, module_name, finished_at, overall_status,
                      total_checks, ok_count, warning_count, critical_count, error_count)
-                VALUES (?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                summary.run_id, summary.started_at, summary.finished_at,
+                summary.run_id, summary.started_at, summary.run_type,
+                summary.module_id, summary.module_name, summary.finished_at,
                 summary.overall_status, summary.total_checks,
                 summary.ok_count, summary.warning_count,
                 summary.critical_count, summary.error_count,
@@ -165,13 +183,28 @@ class ResultStore:
                 r.status, r.message, datetime.now().isoformat(), channel,
             ))
 
-    def get_recent_runs(self, limit: int = 30) -> list[dict]:
+    def get_recent_runs(
+        self,
+        limit: int = 30,
+        run_type: str | None = None,
+        module_id: int | None = None,
+    ) -> list[dict]:
         with self._conn() as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT * FROM check_runs
-                ORDER BY started_at DESC LIMIT ?
-            """, (limit,)).fetchall()
+            query = "SELECT * FROM check_runs"
+            conditions = []
+            params = []
+            if run_type:
+                conditions.append("run_type = ?")
+                params.append(run_type)
+            if module_id is not None:
+                conditions.append("module_id = ?")
+                params.append(module_id)
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += " ORDER BY started_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(query, tuple(params)).fetchall()
         return [dict(r) for r in rows]
 
     def get_run_results(self, run_id: str) -> list[dict]:
@@ -190,6 +223,15 @@ class ResultStore:
                 d["details"] = {}
             results.append(d)
         return results
+
+    def get_run(self, run_id: str) -> Optional[dict]:
+        with self._conn() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("""
+                SELECT * FROM check_runs
+                WHERE run_id = ?
+            """, (run_id,)).fetchone()
+        return dict(row) if row else None
 
     def get_latest_run(self) -> Optional[dict]:
         runs = self.get_recent_runs(limit=1)
