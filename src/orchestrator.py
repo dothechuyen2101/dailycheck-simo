@@ -1,21 +1,24 @@
 """
-Orchestrator – Điều phối chạy song song tất cả check modules,
-tổng hợp kết quả và tính toán overall status.
+Orchestrator – Chạy Daily Check theo runtime plan do Dashboard nhập.
+Mọi tham số bước check đều lấy từ SQLite (systems/hosts/plan_steps), không hardcode.
 """
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from src.config_manager import get
 from src.logger import CheckResult, RunSummary, ResultStore
 from src.alert_manager import AlertManager
 from src.report_generator import generate_html_report, generate_subject
-import src.checks.oracle_checks as oracle_checks
-import src.checks.mongo_checks as mongo_checks
-import src.checks.hadoop_checks as hadoop_checks
-import src.checks.app_checks as app_checks
+from src.plan_store import PlanStore
+from src.runtime_plan import (
+    PlanValidationError,
+    build_runtime_plan,
+    serialize_for_snapshot,
+)
+from src.checks.runners import run_system_plan
 
 logger = logging.getLogger("dailycheck.orchestrator")
 
@@ -29,46 +32,63 @@ def _overall_status(results: List[CheckResult]) -> str:
     return "OK"
 
 
-def run_daily_check() -> RunSummary:
-    """
-    Entry point chính – chạy toàn bộ Daily Check.
-    Trả về RunSummary với đầy đủ kết quả.
-    """
+def run_daily_check(plan_id: Optional[int] = None) -> RunSummary:
+    """Entry point chính – chạy Daily Check theo plan."""
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
     started_at = datetime.now().isoformat()
     logger.info(f"=== SIMO Daily Check bắt đầu – Run ID: {run_id} ===")
 
     store = ResultStore()
+    plan_store = PlanStore()
     alert_mgr = AlertManager()
     max_workers = get("general.max_workers", 10)
 
-    # Đăng ký run vào DB ngay
     summary = RunSummary(run_id=run_id, started_at=started_at)
     store.save_run(summary)
 
     all_results: List[CheckResult] = []
 
-    # Chạy song song các module
-    modules = [
-        ("Oracle", oracle_checks.run_all),
-        ("MongoDB", mongo_checks.run_all),
-        ("Hadoop", hadoop_checks.run_all),
-        ("Application", app_checks.run_all),
-    ]
+    try:
+        runtime_plan = build_runtime_plan(plan_id=plan_id, store=plan_store)
+    except PlanValidationError as e:
+        logger.error("Plan không hợp lệ: %s", e)
+        for err in e.errors:
+            all_results.append(
+                CheckResult("Plan", "-", "Validate plan", "ERROR", err)
+            )
+        plan_store.save_run_snapshot(run_id, plan_id, {"errors": e.errors})
+    else:
+        plan_store.save_run_snapshot(
+            run_id, runtime_plan.get("plan_id"), serialize_for_snapshot(runtime_plan)
+        )
 
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(modules))) as executor:
-        futures = {
-            executor.submit(fn): name
-            for name, fn in modules
-        }
-        for future in as_completed(futures):
-            module_name = futures[future]
-            try:
-                results = future.result()
-                all_results.extend(results)
-                logger.info(f"Module [{module_name}] hoàn thành – {len(results)} checks")
-            except Exception as e:
-                logger.exception(f"Module [{module_name}] gặp lỗi nghiêm trọng: {e}")
+        systems = runtime_plan.get("systems", [])
+        logger.info(
+            "Plan '%s' – %d system, tổng %d step",
+            runtime_plan.get("plan_name"),
+            len(systems),
+            sum(len(s.get("steps", [])) for s in systems),
+        )
+
+        if systems:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(systems))) as executor:
+                futures = {
+                    executor.submit(run_system_plan, sp): sp["system_name"]
+                    for sp in systems
+                }
+                for future in as_completed(futures):
+                    sys_name = futures[future]
+                    try:
+                        results = future.result()
+                        all_results.extend(results)
+                        logger.info(
+                            "System [%s] hoàn thành – %d checks", sys_name, len(results)
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.exception("System [%s] lỗi nghiêm trọng", sys_name)
+                        all_results.append(
+                            CheckResult(sys_name, "-", "Runner", "ERROR", str(e))
+                        )
 
     # Lưu kết quả vào DB
     for r in all_results:

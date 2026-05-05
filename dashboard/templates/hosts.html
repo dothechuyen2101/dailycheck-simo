@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Hosts – {{ system.name }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="/systems">Systems</a></li>
+    <li class="breadcrumb-item active">{{ system.name }} – Hosts</li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h5 class="fw-bold mb-0">
+    Hosts cho hệ thống <span class="text-primary">{{ system.name }}</span>
+    <small class="text-muted fs-6">({{ system.system_type }})</small>
+  </h5>
+  <button class="btn btn-primary btn-sm"
+          data-bs-toggle="modal" data-bs-target="#hostModal"
+          onclick="openHostModal()">+ Thêm host</button>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0 align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th>#</th><th>Tên</th><th>IP</th><th>User</th><th>Auth</th>
+          <th>Port</th><th>Role</th><th>Extra JSON</th><th>Enabled</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in hosts %}
+        <tr data-host='{{ h|tojson }}'>
+          <td>{{ h.id }}</td>
+          <td class="fw-semibold">{{ h.name }}</td>
+          <td>{{ h.ip }}</td>
+          <td>{{ h.username }}</td>
+          <td>
+            {% if h.key_path %}<span class="badge bg-info text-dark">Key</span>{% endif %}
+            {% if h.password %}<span class="badge bg-warning text-dark">Password</span>{% endif %}
+          </td>
+          <td>{{ h.ssh_port }}</td>
+          <td>{{ h.role or '' }}</td>
+          <td><small><code>{{ h.extra|tojson }}</code></small></td>
+          <td>
+            {% if h.enabled %}<span class="badge bg-success">On</span>
+            {% else %}<span class="badge bg-secondary">Off</span>{% endif %}
+          </td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-outline-primary"
+                    onclick="openHostModal({{ h.id }})">Sửa</button>
+            <button class="btn btn-sm btn-outline-danger"
+                    onclick="deleteHost({{ h.id }})">Xoá</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal fade" id="hostModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="hostModalTitle">Thêm host</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="hostId">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">Tên host *</label>
+            <input class="form-control" id="hostName">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">IP *</label>
+            <input class="form-control" id="hostIp">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Username *</label>
+            <input class="form-control" id="hostUser">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">SSH port</label>
+            <input class="form-control" id="hostPort" type="number" value="22">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Role</label>
+            <input class="form-control" id="hostRole" placeholder="primary/secondary/namenode...">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">SSH key path</label>
+            <input class="form-control" id="hostKey" placeholder="~/.ssh/id_rsa">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Password (tuỳ chọn)</label>
+            <input class="form-control" id="hostPass" type="password">
+          </div>
+          <div class="col-12">
+            <label class="form-label">Extra JSON</label>
+            <textarea class="form-control" id="hostExtra" rows="4"
+              placeholder='{"oracle_sid":"simo1","asm_sid":"+ASM1"}'></textarea>
+            <small class="text-muted">
+              Dùng để khai báo các giá trị riêng của host như
+              <code>oracle_sid</code>, <code>asm_sid</code>, <code>alert_log_path</code>…
+            </small>
+          </div>
+          <div class="col-12">
+            <div class="form-check">
+              <input type="checkbox" class="form-check-input" id="hostEnabled" checked>
+              <label class="form-check-label" for="hostEnabled">Enabled</label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Huỷ</button>
+        <button class="btn btn-primary" onclick="saveHost()">Lưu</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SYSTEM_ID = {{ system.id }};
+function openHostModal(id) {
+  if (id) {
+    const tr = document.querySelector(`tr[data-host*='"id": ${id}']`);
+    const host = JSON.parse(tr.dataset.host);
+    document.getElementById('hostId').value = id;
+    document.getElementById('hostName').value = host.name || '';
+    document.getElementById('hostIp').value = host.ip || '';
+    document.getElementById('hostUser').value = host.username || '';
+    document.getElementById('hostPort').value = host.ssh_port || 22;
+    document.getElementById('hostRole').value = host.role || '';
+    document.getElementById('hostKey').value = host.key_path || '';
+    document.getElementById('hostPass').value = host.password || '';
+    document.getElementById('hostExtra').value = JSON.stringify(host.extra || {}, null, 2);
+    document.getElementById('hostEnabled').checked = !!host.enabled;
+    document.getElementById('hostModalTitle').textContent = 'Sửa host';
+  } else {
+    document.getElementById('hostId').value = '';
+    ['hostName','hostIp','hostUser','hostRole','hostKey','hostPass','hostExtra']
+      .forEach(k => document.getElementById(k).value = '');
+    document.getElementById('hostPort').value = 22;
+    document.getElementById('hostEnabled').checked = true;
+    document.getElementById('hostModalTitle').textContent = 'Thêm host';
+  }
+}
+async function saveHost() {
+  let extra = {};
+  const raw = document.getElementById('hostExtra').value.trim();
+  if (raw) {
+    try { extra = JSON.parse(raw); }
+    catch (e) { alert('Extra JSON không hợp lệ: ' + e.message); return; }
+  }
+  const id = document.getElementById('hostId').value;
+  const payload = {
+    name: document.getElementById('hostName').value.trim(),
+    ip: document.getElementById('hostIp').value.trim(),
+    username: document.getElementById('hostUser').value.trim(),
+    ssh_port: parseInt(document.getElementById('hostPort').value) || 22,
+    role: document.getElementById('hostRole').value,
+    key_path: document.getElementById('hostKey').value,
+    password: document.getElementById('hostPass').value,
+    extra: extra,
+    enabled: document.getElementById('hostEnabled').checked,
+  };
+  if (!payload.name || !payload.ip || !payload.username) {
+    alert('Vui lòng nhập tên/IP/user'); return;
+  }
+  const url = id ? `/api/hosts/${id}` : `/api/systems/${SYSTEM_ID}/hosts`;
+  const method = id ? 'PUT' : 'POST';
+  const res = await fetch(url, {method, headers: {'Content-Type':'application/json'},
+                                body: JSON.stringify(payload)});
+  if (!res.ok) { alert((await res.json()).error || 'Lỗi'); return; }
+  location.reload();
+}
+async function deleteHost(id) {
+  if (!confirm('Xoá host này?')) return;
+  const res = await fetch(`/api/hosts/${id}`, {method:'DELETE'});
+  if (!res.ok) { alert('Lỗi'); return; }
+  location.reload();
+}
+</script>
+{% endblock %}

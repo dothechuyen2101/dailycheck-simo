@@ -26,10 +26,20 @@
 </style>
 </head>
 <body>
-<nav class="navbar navbar-dark bg-dark mb-4">
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
   <div class="container-fluid">
     <a class="navbar-brand" href="/">📊 SIMO Daily Check</a>
-    <span class="text-light small">{{ now }}</span>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNav">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="mainNav">
+      <ul class="navbar-nav me-auto">
+        <li class="nav-item"><a class="nav-link" href="/">Dashboard</a></li>
+        <li class="nav-item"><a class="nav-link" href="/systems">Systems</a></li>
+        <li class="nav-item"><a class="nav-link" href="/plans">Plans</a></li>
+      </ul>
+      <span class="text-light small">{{ now }}</span>
+    </div>
   </div>
 </nav>
 <div class="container-fluid px-4">

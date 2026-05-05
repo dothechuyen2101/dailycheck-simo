@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Plans – SIMO Daily Check{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h5 class="fw-bold mb-0">Quản lý plan kiểm tra</h5>
+  <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#planModal"
+          onclick="openPlanModal()">+ Tạo plan</button>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead class="table-dark">
+        <tr>
+          <th>#</th><th>Tên</th><th>Mô tả</th><th>Default</th>
+          <th>Số step</th><th>Enabled</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in plans %}
+        <tr data-id="{{ p.id }}"
+            data-name="{{ p.name }}"
+            data-desc="{{ p.description or '' }}"
+            data-default="{{ p.is_default }}"
+            data-enabled="{{ p.enabled }}">
+          <td>{{ p.id }}</td>
+          <td class="fw-semibold">{{ p.name }}</td>
+          <td><small class="text-muted">{{ p.description }}</small></td>
+          <td>
+            {% if p.is_default %}<span class="badge bg-primary">Default</span>{% endif %}
+          </td>
+          <td>{{ p.steps_count }}</td>
+          <td>
+            {% if p.enabled %}<span class="badge bg-success">On</span>
+            {% else %}<span class="badge bg-secondary">Off</span>{% endif %}
+          </td>
+          <td class="text-end">
+            <a href="/plans/{{ p.id }}/editor" class="btn btn-sm btn-outline-secondary">Editor</a>
+            <button class="btn btn-sm btn-outline-success" onclick="runPlan({{ p.id }})">▶ Run</button>
+            <button class="btn btn-sm btn-outline-primary" onclick="openPlanModal({{ p.id }})">Sửa</button>
+            <button class="btn btn-sm btn-outline-danger" onclick="deletePlan({{ p.id }})">Xoá</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal fade" id="planModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="planModalTitle">Tạo plan</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="planId">
+        <div class="mb-3">
+          <label class="form-label">Tên plan *</label>
+          <input class="form-control" id="planName">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Mô tả</label>
+          <textarea class="form-control" id="planDesc" rows="2"></textarea>
+        </div>
+        <div class="form-check mb-2">
+          <input type="checkbox" class="form-check-input" id="planDefault">
+          <label class="form-check-label" for="planDefault">Default plan (chạy khi trigger scheduler)</label>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="planEnabled" checked>
+          <label class="form-check-label" for="planEnabled">Enabled</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Huỷ</button>
+        <button class="btn btn-primary" onclick="savePlan()">Lưu</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openPlanModal(id) {
+  if (id) {
+    const tr = document.querySelector(`tr[data-id="${id}"]`);
+    document.getElementById('planId').value = id;
+    document.getElementById('planName').value = tr.dataset.name;
+    document.getElementById('planDesc').value = tr.dataset.desc;
+    document.getElementById('planDefault').checked = tr.dataset.default === '1';
+    document.getElementById('planEnabled').checked = tr.dataset.enabled === '1';
+    document.getElementById('planModalTitle').textContent = 'Sửa plan';
+  } else {
+    document.getElementById('planId').value = '';
+    document.getElementById('planName').value = '';
+    document.getElementById('planDesc').value = '';
+    document.getElementById('planDefault').checked = false;
+    document.getElementById('planEnabled').checked = true;
+    document.getElementById('planModalTitle').textContent = 'Tạo plan';
+  }
+}
+async function savePlan() {
+  const id = document.getElementById('planId').value;
+  const payload = {
+    name: document.getElementById('planName').value.trim(),
+    description: document.getElementById('planDesc').value,
+    is_default: document.getElementById('planDefault').checked,
+    enabled: document.getElementById('planEnabled').checked,
+  };
+  if (!payload.name) { alert('Vui lòng nhập tên'); return; }
+  const url = id ? `/api/plans/${id}` : '/api/plans';
+  const method = id ? 'PUT' : 'POST';
+  const res = await fetch(url, {method, headers:{'Content-Type':'application/json'},
+                                  body: JSON.stringify(payload)});
+  if (!res.ok) { alert((await res.json()).error || 'Lỗi'); return; }
+  location.reload();
+}
+async function deletePlan(id) {
+  if (!confirm('Xoá plan này?')) return;
+  const res = await fetch(`/api/plans/${id}`, {method:'DELETE'});
+  if (!res.ok) { alert('Lỗi'); return; }
+  location.reload();
+}
+async function runPlan(id) {
+  if (!confirm('Chạy plan này ngay?')) return;
+  const res = await fetch('/api/run-plan', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({plan_id: id}),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert('Lỗi:\n' + (data.errors || [data.error || 'Không xác định']).join('\n'));
+    return;
+  }
+  alert('Đã trigger. Quay về Dashboard để xem tiến trình.');
+}
+</script>
+{% endblock %}

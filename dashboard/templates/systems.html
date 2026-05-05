@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Systems – SIMO Daily Check{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h5 class="fw-bold mb-0">Quản lý hệ thống</h5>
+  <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#systemModal"
+          onclick="openSystemModal()">+ Thêm hệ thống</button>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0 align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th>#</th><th>Tên</th><th>Loại</th><th>Mô tả</th>
+          <th>Số host</th><th>Trạng thái</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="systemsTbody">
+        {% for s in systems %}
+        <tr data-id="{{ s.id }}"
+            data-name="{{ s.name }}"
+            data-type="{{ s.system_type }}"
+            data-desc="{{ s.description or '' }}"
+            data-enabled="{{ s.enabled }}">
+          <td>{{ s.id }}</td>
+          <td class="fw-semibold">{{ s.name }}</td>
+          <td><span class="badge bg-info text-dark">{{ s.system_type }}</span></td>
+          <td><small class="text-muted">{{ s.description }}</small></td>
+          <td>{{ s.hosts_count }}</td>
+          <td>
+            {% if s.enabled %}<span class="badge bg-success">Enabled</span>
+            {% else %}<span class="badge bg-secondary">Disabled</span>{% endif %}
+          </td>
+          <td class="text-end">
+            <a href="/systems/{{ s.id }}/hosts" class="btn btn-sm btn-outline-secondary">Hosts</a>
+            <button class="btn btn-sm btn-outline-primary"
+                    onclick="openSystemModal({{ s.id }})">Sửa</button>
+            <button class="btn btn-sm btn-outline-danger"
+                    onclick="deleteSystem({{ s.id }})">Xoá</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal fade" id="systemModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="systemModalTitle">Thêm hệ thống</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="systemId">
+        <div class="mb-3">
+          <label class="form-label">Tên hệ thống *</label>
+          <input class="form-control" id="systemName" placeholder="Ví dụ: Oracle SIMO">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Loại hệ thống *</label>
+          <select class="form-select" id="systemType">
+            {% for t in system_types %}
+            <option value="{{ t.system_type }}">{{ t.label }} ({{ t.system_type }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Mô tả</label>
+          <textarea class="form-control" id="systemDesc" rows="2"></textarea>
+        </div>
+        <div class="form-check">
+          <input type="checkbox" class="form-check-input" id="systemEnabled" checked>
+          <label class="form-check-label" for="systemEnabled">Enabled</label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Huỷ</button>
+        <button class="btn btn-primary" onclick="saveSystem()">Lưu</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openSystemModal(id) {
+  if (id) {
+    const tr = document.querySelector(`tr[data-id="${id}"]`);
+    document.getElementById('systemId').value = id;
+    document.getElementById('systemName').value = tr.dataset.name;
+    document.getElementById('systemType').value = tr.dataset.type;
+    document.getElementById('systemDesc').value = tr.dataset.desc;
+    document.getElementById('systemEnabled').checked = tr.dataset.enabled === '1';
+    document.getElementById('systemModalTitle').textContent = 'Sửa hệ thống';
+  } else {
+    document.getElementById('systemId').value = '';
+    document.getElementById('systemName').value = '';
+    document.getElementById('systemDesc').value = '';
+    document.getElementById('systemEnabled').checked = true;
+    document.getElementById('systemModalTitle').textContent = 'Thêm hệ thống';
+  }
+}
+async function saveSystem() {
+  const id = document.getElementById('systemId').value;
+  const payload = {
+    name: document.getElementById('systemName').value.trim(),
+    system_type: document.getElementById('systemType').value,
+    description: document.getElementById('systemDesc').value,
+    enabled: document.getElementById('systemEnabled').checked,
+  };
+  if (!payload.name) { alert('Vui lòng nhập tên'); return; }
+  const url = id ? `/api/systems/${id}` : '/api/systems';
+  const method = id ? 'PUT' : 'POST';
+  const res = await fetch(url, {method, headers: {'Content-Type':'application/json'},
+                                  body: JSON.stringify(payload)});
+  if (!res.ok) { alert((await res.json()).error || 'Lỗi'); return; }
+  location.reload();
+}
+async function deleteSystem(id) {
+  if (!confirm('Xoá hệ thống này? Hosts và plan_steps liên quan cũng sẽ bị xoá.')) return;
+  const res = await fetch(`/api/systems/${id}`, {method: 'DELETE'});
+  if (!res.ok) { alert('Lỗi'); return; }
+  location.reload();
+}
+</script>
+{% endblock %}

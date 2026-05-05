@@ -7,7 +7,7 @@ services:
     container_name: simo_dailycheck
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "5001:5000"
     volumes:
       # Giữ dữ liệu và log bên ngoài container
       - ./data:/app/data

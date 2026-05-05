@@ -1,0 +1,389 @@
+{% extends "base.html" %}
+{% block title %}Plan Editor – {{ plan.name }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="/plans">Plans</a></li>
+    <li class="breadcrumb-item active">{{ plan.name }}</li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h5 class="fw-bold mb-0">{{ plan.name }}</h5>
+    <small class="text-muted">{{ plan.description }}</small>
+  </div>
+  <div>
+    <button class="btn btn-outline-success btn-sm" onclick="runPlan()">▶ Chạy plan này</button>
+    <button class="btn btn-primary btn-sm" onclick="openStepModal()">+ Thêm step</button>
+  </div>
+</div>
+
+{% if not systems %}
+<div class="alert alert-warning">
+  Chưa có hệ thống nào. Vào <a href="/systems">/systems</a> để tạo trước.
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead class="table-dark">
+        <tr>
+          <th>Thứ tự</th><th>Hệ thống</th><th>Step</th><th>Host scope</th>
+          <th>Params</th><th>Enabled</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for st in steps %}
+        <tr data-step='{{ st|tojson }}'>
+          <td>{{ st.step_order }}</td>
+          <td>
+            {% for s in systems %}{% if s.id == st.system_id %}
+              <span class="fw-semibold">{{ s.name }}</span>
+              <br><small class="text-muted">{{ s.system_type }}</small>
+            {% endif %}{% endfor %}
+          </td>
+          <td><code>{{ st.step_id }}</code>
+              <br><small>{{ st.step_name }}</small></td>
+          <td><small><code>{{ st.host_scope|tojson }}</code></small></td>
+          <td><small><code>{{ st.params|tojson }}</code></small></td>
+          <td>
+            {% if st.enabled %}<span class="badge bg-success">On</span>
+            {% else %}<span class="badge bg-secondary">Off</span>{% endif %}
+          </td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-outline-primary" onclick="openStepModal({{ st.id }})">Sửa</button>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteStep({{ st.id }})">Xoá</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Modal Step -->
+<div class="modal fade" id="stepModal" tabindex="-1">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="stepModalTitle">Thêm step</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="stepId">
+        <div class="row g-3">
+          <div class="col-md-5">
+            <label class="form-label">Hệ thống *</label>
+            <select class="form-select" id="stepSystemId" onchange="renderStepChoices()">
+              <option value="">-- Chọn hệ thống --</option>
+              {% for s in systems %}
+              <option value="{{ s.id }}" data-type="{{ s.system_type }}">
+                {{ s.name }} ({{ s.system_type }})
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label">Step *</label>
+            <select class="form-select" id="stepStepId" onchange="renderParamForm()">
+              <option value="">-- Chọn step --</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Thứ tự</label>
+            <input class="form-control" id="stepOrder" type="number" value="0">
+          </div>
+
+          <div class="col-md-8">
+            <label class="form-label">Host scope</label>
+            <select class="form-select mb-2" id="hostScopeMode" onchange="toggleHostSelector()">
+              <option value="all">Tất cả host của hệ thống</option>
+              <option value="selected">Chỉ host được chọn</option>
+              <option value="first">Host đầu tiên</option>
+            </select>
+            <div id="hostSelector" class="border rounded p-2" style="display:none;max-height:150px;overflow-y:auto;">
+              <em class="text-muted">Chọn hệ thống trước</em>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Enabled</label>
+            <div class="form-check form-switch mt-2">
+              <input type="checkbox" class="form-check-input" id="stepEnabled" checked>
+              <label class="form-check-label" for="stepEnabled">Bước này được bật</label>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label fw-bold">Tham số (form động)</label>
+            <div id="paramForm" class="row g-2">
+              <div class="col-12 text-muted"><em>Chọn step để hiện tham số</em></div>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label fw-bold">Advanced JSON (tuỳ chọn)</label>
+            <textarea class="form-control font-monospace" id="stepAdvancedJson" rows="4"
+              placeholder='{"custom_field":"..."}'></textarea>
+            <small class="text-muted">
+              Mọi field trong JSON sẽ được merge với form; form có ưu tiên override.
+            </small>
+          </div>
+        </div>
+        <div id="stepErrors" class="alert alert-danger mt-3" style="display:none;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Huỷ</button>
+        <button class="btn btn-primary" onclick="saveStep()">Lưu</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PLAN_ID = {{ plan.id }};
+const REGISTRY = {{ registry|tojson }};
+const SYSTEMS = {{ systems|tojson }};
+
+function getSelectedSystem() {
+  const sel = document.getElementById('stepSystemId');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt || !opt.value) return null;
+  const id = parseInt(opt.value);
+  return SYSTEMS.find(s => s.id === id);
+}
+
+function renderStepChoices() {
+  const stepSel = document.getElementById('stepStepId');
+  stepSel.innerHTML = '<option value="">-- Chọn step --</option>';
+  const sys = getSelectedSystem();
+  if (!sys) { renderParamForm(); toggleHostSelector(); return; }
+  const steps = (REGISTRY[sys.system_type] || {}).steps || {};
+  for (const [key, meta] of Object.entries(steps)) {
+    const opt = document.createElement('option');
+    opt.value = key;
+    opt.textContent = meta.label + ' (' + key + ')';
+    stepSel.appendChild(opt);
+  }
+  renderParamForm();
+  toggleHostSelector();
+}
+
+function renderParamForm(existingParams) {
+  const form = document.getElementById('paramForm');
+  form.innerHTML = '';
+  const sys = getSelectedSystem();
+  const stepId = document.getElementById('stepStepId').value;
+  if (!sys || !stepId) {
+    form.innerHTML = '<div class="col-12 text-muted"><em>Chọn step để hiện tham số</em></div>';
+    return;
+  }
+  const schema = ((REGISTRY[sys.system_type] || {}).steps || {})[stepId];
+  if (!schema) return;
+  const params = existingParams || {};
+  for (const field of schema.params) {
+    const col = document.createElement('div');
+    col.className = 'col-md-6';
+    const label = document.createElement('label');
+    label.className = 'form-label';
+    label.innerHTML = field.label + (field.required ? ' <span class="text-danger">*</span>' : '');
+    col.appendChild(label);
+
+    let input;
+    const val = params[field.name];
+    if (field.type === 'textarea' || field.type === 'json') {
+      input = document.createElement('textarea');
+      input.rows = 4;
+      input.className = 'form-control font-monospace';
+      input.value = val != null ? (typeof val === 'string' ? val : JSON.stringify(val, null, 2)) : '';
+    } else if (field.type === 'list') {
+      input = document.createElement('textarea');
+      input.rows = 3;
+      input.className = 'form-control';
+      input.placeholder = 'Mỗi dòng một giá trị';
+      input.value = Array.isArray(val) ? val.join('\n') : (val || '');
+    } else if (field.type === 'number') {
+      input = document.createElement('input');
+      input.type = 'number';
+      input.className = 'form-control';
+      input.value = val != null ? val : '';
+    } else if (field.type === 'select') {
+      input = document.createElement('select');
+      input.className = 'form-select';
+      (field.options || []).forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt; o.textContent = opt;
+        if (val === opt) o.selected = true;
+        input.appendChild(o);
+      });
+    } else if (field.type === 'boolean') {
+      input = document.createElement('select');
+      input.className = 'form-select';
+      ['true','false'].forEach(v => {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = v;
+        if (String(val) === v) o.selected = true;
+        input.appendChild(o);
+      });
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'form-control';
+      input.value = val != null ? val : '';
+    }
+    input.dataset.fieldName = field.name;
+    input.dataset.fieldType = field.type;
+    col.appendChild(input);
+    if (field.help) {
+      const small = document.createElement('small');
+      small.className = 'text-muted';
+      small.textContent = field.help;
+      col.appendChild(small);
+    }
+    form.appendChild(col);
+  }
+}
+
+function toggleHostSelector(existingScope) {
+  const mode = document.getElementById('hostScopeMode').value;
+  const selector = document.getElementById('hostSelector');
+  selector.style.display = mode === 'selected' ? '' : 'none';
+  if (mode !== 'selected') return;
+  const sys = getSelectedSystem();
+  if (!sys) { selector.innerHTML = '<em class="text-muted">Chọn hệ thống trước</em>'; return; }
+  const selectedIds = new Set(((existingScope || {}).host_ids) || []);
+  selector.innerHTML = '';
+  (sys.hosts || []).forEach(h => {
+    const div = document.createElement('div');
+    div.className = 'form-check';
+    div.innerHTML = `<input class="form-check-input hostchk" type="checkbox" value="${h.id}" id="h${h.id}" ${selectedIds.has(h.id) ? 'checked' : ''}>
+                     <label class="form-check-label" for="h${h.id}">${h.name} <small class="text-muted">(${h.ip})</small></label>`;
+    selector.appendChild(div);
+  });
+}
+
+function collectParams() {
+  const params = {};
+  document.querySelectorAll('#paramForm [data-field-name]').forEach(el => {
+    const name = el.dataset.fieldName;
+    const type = el.dataset.fieldType;
+    const raw = el.value;
+    if (raw == null || raw === '') return;
+    if (type === 'list') {
+      params[name] = raw.split('\n').map(s => s.trim()).filter(Boolean);
+    } else if (type === 'number') {
+      params[name] = Number(raw);
+    } else if (type === 'boolean') {
+      params[name] = raw === 'true';
+    } else if (type === 'json') {
+      try { params[name] = JSON.parse(raw); }
+      catch (e) { throw new Error(`Field ${name}: JSON invalid (${e.message})`); }
+    } else {
+      params[name] = raw;
+    }
+  });
+  return params;
+}
+
+function collectHostScope() {
+  const mode = document.getElementById('hostScopeMode').value;
+  if (mode === 'selected') {
+    const ids = Array.from(document.querySelectorAll('.hostchk:checked')).map(x => parseInt(x.value));
+    return {mode: 'selected', host_ids: ids};
+  }
+  return {mode};
+}
+
+function openStepModal(id) {
+  document.getElementById('stepErrors').style.display = 'none';
+  if (id) {
+    const tr = document.querySelector(`tr[data-step*='"id": ${id}']`);
+    const step = JSON.parse(tr.dataset.step);
+    document.getElementById('stepId').value = id;
+    document.getElementById('stepSystemId').value = step.system_id;
+    renderStepChoices();
+    document.getElementById('stepStepId').value = step.step_id;
+    document.getElementById('stepOrder').value = step.step_order || 0;
+    document.getElementById('stepEnabled').checked = !!step.enabled;
+    document.getElementById('hostScopeMode').value = (step.host_scope || {}).mode || 'all';
+    toggleHostSelector(step.host_scope || {});
+    renderParamForm(step.params || {});
+    document.getElementById('stepAdvancedJson').value = '';
+    document.getElementById('stepModalTitle').textContent = 'Sửa step';
+  } else {
+    document.getElementById('stepId').value = '';
+    document.getElementById('stepSystemId').value = '';
+    document.getElementById('stepStepId').innerHTML = '<option value="">-- Chọn step --</option>';
+    document.getElementById('stepOrder').value = 0;
+    document.getElementById('stepEnabled').checked = true;
+    document.getElementById('hostScopeMode').value = 'all';
+    toggleHostSelector();
+    renderParamForm();
+    document.getElementById('stepAdvancedJson').value = '';
+    document.getElementById('stepModalTitle').textContent = 'Thêm step';
+  }
+  const modal = new bootstrap.Modal(document.getElementById('stepModal'));
+  modal.show();
+}
+
+async function saveStep() {
+  const errBox = document.getElementById('stepErrors');
+  errBox.style.display = 'none';
+  let params;
+  try { params = collectParams(); }
+  catch (e) {
+    errBox.textContent = e.message; errBox.style.display = ''; return;
+  }
+  const payload = {
+    system_id: parseInt(document.getElementById('stepSystemId').value),
+    step_id: document.getElementById('stepStepId').value,
+    step_order: parseInt(document.getElementById('stepOrder').value) || 0,
+    enabled: document.getElementById('stepEnabled').checked,
+    host_scope: collectHostScope(),
+    params: params,
+  };
+  const advRaw = document.getElementById('stepAdvancedJson').value.trim();
+  if (advRaw) payload.advanced_json = advRaw;
+  if (!payload.system_id || !payload.step_id) {
+    errBox.textContent = 'Chọn hệ thống và step'; errBox.style.display = ''; return;
+  }
+  const id = document.getElementById('stepId').value;
+  const url = id ? `/api/plan-steps/${id}` : `/api/plans/${PLAN_ID}/steps`;
+  const method = id ? 'PUT' : 'POST';
+  const res = await fetch(url, {method, headers:{'Content-Type':'application/json'},
+                                  body: JSON.stringify(payload)});
+  if (!res.ok) {
+    const data = await res.json();
+    errBox.innerHTML = (data.errors || [data.error || 'Lỗi']).map(e => '• ' + e).join('<br>');
+    errBox.style.display = '';
+    return;
+  }
+  location.reload();
+}
+
+async function deleteStep(id) {
+  if (!confirm('Xoá step này?')) return;
+  const res = await fetch(`/api/plan-steps/${id}`, {method:'DELETE'});
+  if (!res.ok) { alert('Lỗi'); return; }
+  location.reload();
+}
+
+async function runPlan() {
+  if (!confirm('Chạy plan này ngay?')) return;
+  const res = await fetch('/api/run-plan', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({plan_id: PLAN_ID})
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert('Lỗi:\n' + (data.errors || [data.error || 'Không xác định']).join('\n'));
+    return;
+  }
+  alert('Đã trigger plan. Mở Dashboard để xem tiến trình.');
+}
+</script>
+{% endblock %}
