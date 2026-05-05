@@ -18,7 +18,7 @@
 
 ## 1. Tổng quan hệ thống
 
-SIMO Daily Check là hệ thống tự động kiểm tra tình trạng hàng ngày cho 4 nhóm hạ tầng:
+SIMO Daily Check là hệ thống tự động kiểm tra tình trạng hàng ngày cho 4 nhóm hạ tầng và hỗ trợ thêm dynamic modules do người dùng khai báo:
 
 | Hệ thống | Số node | Số bước kiểm tra | Tổng |
 |----------|---------|------------------|------|
@@ -32,6 +32,10 @@ SIMO Daily Check là hệ thống tự động kiểm tra tình trạng hàng ng
   - `CRITICAL` – có ít nhất 1 CRITICAL hoặc ERROR
   - `WARNING` – có ít nhất 1 WARNING, không CRITICAL/ERROR
   - `OK` – tất cả đều OK
+- Dynamic modules:
+  - được lưu trong SQLite
+  - chạy độc lập theo lịch riêng
+  - dùng SSH command steps với rule-based evaluation
 
 ---
 
@@ -128,7 +132,9 @@ simo_dailycheck/
 │   ├── orchestrator.py      # Điều phối chạy song song + tổng hợp kết quả
 │   ├── scheduler.py         # APScheduler CronTrigger (8:00 daily)
 │   ├── alert_manager.py     # Gửi email/webhook, chống spam
+│   ├── dynamic_modules.py   # Registry + validation + runner cho dynamic modules
 │   ├── report_generator.py  # Tạo HTML report cho email
+│   ├── security.py          # Encrypt/decrypt stored passwords
 │   │
 │   └── checks/
 │       ├── __init__.py
@@ -143,6 +149,8 @@ simo_dailycheck/
 │   └── templates/
 │       ├── base.html
 │       ├── index.html
+│       ├── modules.html
+│       ├── module_form.html
 │       └── run_detail.html
 │
 ├── data/
@@ -263,6 +271,37 @@ Time        Activity
            ├─ T0+63s    Gửi email + webhook (nếu có)
            ├─ T0+64s    Lưu HTML report
            └─ T0+65s    Hoàn thành
+```
+
+### 4.4. Dynamic Module Flow
+
+```
+User tạo/sửa module trong Dashboard
+    │
+    ▼
+dashboard/app.py → DynamicModuleStore
+    │
+    ├─ lưu module metadata
+    ├─ lưu hosts
+    ├─ lưu steps + rules
+    └─ resync APScheduler jobs
+
+Scheduled Trigger HOẶC POST /api/modules/<id>/trigger
+    │
+    ▼
+scheduler._dynamic_job_wrapper(module_id)
+    │
+    ▼
+orchestrator.run_dynamic_module(module_id)
+    │
+    ├─ load module từ SQLite
+    ├─ tạo RunSummary(run_type="dynamic_module")
+    ├─ chạy từng SSH command step
+    ├─ evaluate status:
+    │    critical keyword > warning keyword > non-zero exit mapping > OK
+    ├─ save check_results
+    ├─ generate HTML report riêng cho module
+    └─ send email tới recipients của chính module
 ```
 
 ---
@@ -405,6 +444,9 @@ trigger = CronTrigger(
 CREATE TABLE check_runs (
     run_id          TEXT PRIMARY KEY,     -- "20260416_080000_abc123"
     started_at      TEXT NOT NULL,         -- ISO timestamp
+    run_type        TEXT NOT NULL DEFAULT 'builtin',
+    module_id       INTEGER,
+    module_name     TEXT DEFAULT '',
     finished_at     TEXT,
     overall_status  TEXT DEFAULT 'OK',      -- OK / WARNING / CRITICAL
     total_checks    INTEGER DEFAULT 0,
@@ -444,6 +486,42 @@ CREATE TABLE alert_history (
 
 CREATE INDEX idx_results_run ON check_results(run_id);
 CREATE INDEX idx_runs_started ON check_runs(started_at);
+
+CREATE TABLE dynamic_modules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    system_name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    timezone TEXT NOT NULL,
+    daily_time TEXT NOT NULL,
+    recipient_emails TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE dynamic_module_hosts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    ip TEXT NOT NULL,
+    port INTEGER NOT NULL DEFAULT 22,
+    username TEXT NOT NULL,
+    auth_type TEXT NOT NULL DEFAULT 'password',
+    encrypted_password TEXT DEFAULT '',
+    key_path TEXT DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE dynamic_module_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    command TEXT NOT NULL,
+    timeout_sec INTEGER NOT NULL DEFAULT 60,
+    run_on_each_host INTEGER NOT NULL DEFAULT 1,
+    rules_json TEXT NOT NULL DEFAULT '{}',
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
 ```
 
 ### 6.2. Data Classes
@@ -464,6 +542,9 @@ class CheckResult:
 class RunSummary:
     run_id: str
     started_at: str
+    run_type: str = "builtin"
+    module_id: int | None = None
+    module_name: str = ""
     finished_at: str = ""
     overall_status: str = "OK"
     total_checks: int = 0
@@ -509,6 +590,7 @@ with ThreadPoolExecutor(max_workers=min(10, len(modules))) as executor:
 - `ssh_connect(host_cfg)` là context manager đảm bảo `close()` được gọi
 - Retry logic: 2 lần retry với 2s delay
 - Timeout mặc định: 30s connect, 60s command (có thể override per-command)
+- Dynamic modules dùng `SSHClient` trực tiếp với host config lưu trong SQLite
 
 ### 7.3. Anti-overlap
 
@@ -528,6 +610,9 @@ def _job_wrapper():
     finally:
         _is_running = False
 ```
+
+- Built-in run có anti-overlap toàn cục
+- Dynamic modules có anti-overlap theo từng `module_id`
 
 ---
 
@@ -551,6 +636,9 @@ scheduler.add_job(
     replace_existing=True,
 )
 ```
+
+- Ngoài job `daily_check`, mỗi dynamic module enabled tạo thêm một job `dynamic_module_<id>`
+- `resync_dynamic_jobs()` được gọi sau create/update/delete module
 
 ### 8.2. Prep Time (07:55)
 
@@ -582,6 +670,13 @@ python main.py                # Cả hai (default)
 | `/api/trigger` | POST | Manual trigger Daily Check |
 | `/api/runs` | GET | JSON: danh sách 30 run |
 | `/api/run/<run_id>` | GET | JSON: kết quả chi tiết 1 run |
+| `/modules` | GET | UI danh sách dynamic modules |
+| `/modules/new` | GET | UI tạo dynamic module |
+| `/modules/<id>/edit` | GET | UI sửa dynamic module |
+| `/api/modules` | GET/POST | List hoặc create dynamic module |
+| `/api/modules/<id>` | GET/PUT/DELETE | Read/update/delete dynamic module |
+| `/api/modules/<id>/trigger` | POST | Trigger dynamic module |
+| `/api/modules/<id>/runs` | GET | Lịch sử run của module |
 
 ### 9.2. Dashboard UI
 
@@ -591,6 +686,7 @@ python main.py                # Cả hai (default)
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  Trạng thái: ✅ OK         Đang chạy: Có                    │
+│  Dynamic Modules: list / edit / run now                    │
 │                                                              │
 │  ── 30 lần chạy gần đây ──────────────────────────────────  │
 │  Run ID                    Thời gian      T.Trạng  OK  WARN  │
@@ -611,6 +707,7 @@ curl http://localhost:5000/api/status
   "is_running": false,
   "latest_run": {
     "run_id": "20260416_080000_abc123",
+    "run_type": "builtin",
     "overall_status": "OK",
     "started_at": "2026-04-16T08:00:00"
   },
@@ -649,6 +746,8 @@ if should_alert():
 
 - Báo cáo HTML tổng hợp gửi **mỗi lần chạy** (không spam filter)
 - Gửi sau khi tất cả checks hoàn thành
+- Built-in runs dùng recipient list toàn cục trong config
+- Dynamic module runs override recipients theo cấu hình module
 
 ---
 
@@ -664,6 +763,7 @@ if should_alert():
 
 - SQLite file trong `data/` – không commit lên Git
 - Không có mã hóa (development); production nên dùng SQLCipher hoặc separate DB server
+- Dynamic module passwords được mã hóa ở cấp ứng dụng trước khi ghi vào SQLite
 
 ### 11.3. Secrets
 
@@ -675,6 +775,8 @@ db_connection:
 notifications:
   email:
     password: "CHANGE_ME"
+security:
+  encryption_key: "CHANGE_ME_DYNAMIC_MODULE_SECRET"
   webhook:
     url: "https://hooks.slack.com/services/CHANGE_ME"
 
@@ -704,6 +806,15 @@ config_manager.load_config()
     ├──► get("hadoop.nodes") → hadoop_checks.py
     └──► get("applications") → app_checks.py
 
+Dynamic Module Registry
+    │
+    ▼
+SQLite: dynamic_modules / dynamic_module_hosts / dynamic_module_steps
+    │
+    ├──► scheduler.resync_dynamic_jobs()
+    ├──► orchestrator.run_dynamic_module(module_id)
+    └──► dashboard module editor UI / APIs
+
 SSH Connection
     │
     ▼
@@ -720,7 +831,7 @@ orchestrator.run_daily_check():
     │  _overall_status() → "OK" / "WARNING" / "CRITICAL"
     │
     ▼
-AlertManager.send_alert()  → Email / Webhook
+AlertManager.send_report() → Email / Webhook
 ReportGenerator.generate_html_report() → data/reports/report_<run_id>.html
 
 Dashboard:

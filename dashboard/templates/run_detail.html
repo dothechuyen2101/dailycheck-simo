@@ -17,10 +17,14 @@
       <div class="col-md-2"><small class="text-muted">Trạng thái</small><br>
         <span class="badge bg-{{ color_map.get(run_info.overall_status,'secondary') }} fs-6">{{ run_info.overall_status }}</span>
       </div>
-      <div class="col-md-4 text-end">
+      <div class="col-md-2"><small class="text-muted">Loại run</small><br>{{ run_info.run_type }}</div>
+      <div class="col-md-2 text-end">
         <a href="/report/{{ run_info.run_id }}" class="btn btn-outline-primary btn-sm" target="_blank">📄 Xem báo cáo HTML</a>
       </div>
     </div>
+    {% if run_info.module_name %}
+    <div class="mt-2"><small class="text-muted">Module:</small> {{ run_info.module_name }}</div>
+    {% endif %}
     <div class="row mt-3 text-center">
       <div class="col"><div class="fw-bold fs-4">{{ run_info.total_checks }}</div><small class="text-muted">Tổng</small></div>
       <div class="col"><div class="fw-bold fs-4 text-success">{{ run_info.ok_count }}</div><small class="text-muted">OK</small></div>

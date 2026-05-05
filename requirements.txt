@@ -13,6 +13,9 @@ Flask>=3.0.0
 # Config Management
 PyYAML>=6.0.1
 
+# Credential Encryption
+cryptography>=42.0.0
+
 # Oracle DB (tuỳ chọn – cài nếu dùng cx_Oracle trực tiếp thay SSH sqlplus)
 # oracledb>=2.3.0
 

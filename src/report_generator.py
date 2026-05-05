@@ -27,6 +27,11 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
     overall_color = STATUS_COLOR.get(summary.overall_status, "#6c757d")
     overall_label = STATUS_LABEL.get(summary.overall_status, summary.overall_status)
     issue_results = [r for r in results if r.status != "OK"]
+    report_title = "SIMO Daily Check Report"
+    subject_target = "Báo cáo kiểm tra đầu ngày"
+    if summary.run_type == "dynamic_module" and summary.module_name:
+        report_title = f"SIMO Dynamic Module Report – {summary.module_name}"
+        subject_target = f"Module: {summary.module_name}"
 
     # Nhóm kết quả theo system
     systems: dict[str, list] = {}
@@ -80,7 +85,7 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SIMO Daily Check Report – {date_str}</title>
+    <title>{report_title} – {date_str}</title>
 <style>
   body {{ font-family: 'Segoe UI', Arial, sans-serif; margin:0; padding:0; background:#f0f2f5; }}
   .container {{ max-width:900px; margin:20px auto; background:#fff;
@@ -108,8 +113,9 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
 <body>
 <div class="container">
   <div class="header">
-    <h1>📊 SIMO Daily Check Report</h1>
+    <h1>📊 {report_title}</h1>
     <p>Ngày: {date_str} &nbsp;|&nbsp; Run ID: {summary.run_id} &nbsp;|&nbsp;
+       Đối tượng: <strong>{subject_target}</strong> &nbsp;|&nbsp;
        Trạng thái tổng thể: <strong>{overall_label}</strong></p>
   </div>
 
@@ -178,4 +184,6 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
 def generate_subject(summary: RunSummary) -> str:
     label = STATUS_LABEL.get(summary.overall_status, summary.overall_status)
     date_str = datetime.now().strftime("%d/%m/%Y")
+    if summary.run_type == "dynamic_module" and summary.module_name:
+        return f"[SIMO Dynamic Module] {summary.module_name} – {label} – {date_str}"
     return f"[SIMO DailyCheck] {label} – Báo cáo kiểm tra đầu ngày {date_str}"
