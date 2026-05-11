@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sqlite3
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
 
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+TEMPLATE_VAR_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+SAFE_VALUE_PUNCTUATION = set(" ._-/@:+=,")
+DISALLOWED_VALUE_CHARS = set(";&|`$()<>\"'\\\r\n\t")
 
 
 @dataclass
@@ -278,6 +282,11 @@ def validate_module_payload(payload: dict[str, Any], existing: Optional[DynamicM
             errors.append(f"step #{index}: name is required")
         if not command:
             errors.append(f"step #{index}: command is required")
+        else:
+            try:
+                _validate_command_template(command)
+            except ValueError as exc:
+                errors.append(f"step #{index}: invalid command: {exc}")
         if timeout_sec <= 0:
             errors.append(f"step #{index}: timeout_sec must be > 0")
         if normalized_rules["nonzero_exit_status"] not in {"ERROR", "WARNING", "CRITICAL"}:
@@ -376,7 +385,7 @@ class DynamicModuleStore:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT * FROM dynamic_modules
-                ORDER BY name COLLATE NOCASE
+                ORDER BY system_name COLLATE NOCASE
             """).fetchall()
         return [self.get_module(row["id"]) for row in rows]
 
@@ -578,17 +587,94 @@ def _make_result(system: str, host: str, check_name: str, status: str, message: 
     )
 
 
+def _sanitize_value(value: str) -> str:
+    """Validate a template value and return a normalized safe string."""
+    if value is None:
+        return ""
+
+    sanitized = str(value).strip()
+    if not sanitized:
+        return ""
+
+    for char in sanitized:
+        if char in DISALLOWED_VALUE_CHARS:
+            raise ValueError(f"contains disallowed character {char!r}")
+        category = unicodedata.category(char)
+        if char.isalnum() or category.startswith("M") or char in SAFE_VALUE_PUNCTUATION:
+            continue
+        raise ValueError(
+            f"contains unsupported character {char!r}; only letters, digits, spaces, and . _ - / @ : + = , are allowed"
+        )
+
+    return sanitized
+
+
+def _validate_command_template(command: str) -> None:
+    """Validate command template for dangerous patterns."""
+
+    dangerous_patterns = [
+        (r"\$\(", "command substitution '$(' is not allowed"),
+        (r"`", "backtick command substitution is not allowed"),
+        (r"[\r\n\x00]", "control characters are not allowed"),
+        (r"(?<!\S)sudo(?=\s|$)", "sudo is not allowed in dynamic module commands"),
+        (r"(?<!\S)su(?=\s|$)", "su is not allowed in dynamic module commands"),
+        (r"(?<!\S)rm\s+-rf\s+/(?:\s|$)", "destructive root deletion is not allowed"),
+        (r">\s*/dev/(?!null\b)", "redirecting output to device files is not allowed"),
+    ]
+
+    for pattern, message in dangerous_patterns:
+        if re.search(pattern, command, re.IGNORECASE):
+            raise ValueError(message)
+
+
+def _validate_and_sanitize_context(context: dict) -> dict:
+    """Validate and sanitize all context variables."""
+    sanitized_context = {}
+    
+    for key, value in context.items():
+        if value is None:
+            sanitized_context[key] = ""
+        else:
+            try:
+                sanitized_context[key] = _sanitize_value(str(value))
+            except ValueError as exc:
+                raise ValueError(f"Invalid value for '{key}': {exc}") from exc
+    
+    return sanitized_context
+
+
 def _render_command(command: str, module: DynamicModule, host: DynamicModuleHost) -> str:
-    rendered = command
+    """Render command template with validated and sanitized variables."""
+    # Validate the command template first
+    _validate_command_template(command)
+    
+    # Build context with built-in variables
     context = {
         "host_name": host.name,
         "host_ip": host.ip,
         "module_name": module.name,
         "system_name": module.system_name,
     }
+    
+    # Add host variables (convert all to strings)
     context.update({str(key): str(value) for key, value in host.variables.items()})
-    for key, value in context.items():
-        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    
+    # Validate and sanitize all context values
+    sanitized_context = _validate_and_sanitize_context(context)
+    
+    template_vars = set(TEMPLATE_VAR_RE.findall(command))
+    missing_vars = sorted(var for var in template_vars if var not in sanitized_context)
+    if missing_vars:
+        raise ValueError(f"Missing template variable(s): {', '.join(missing_vars)}")
+
+    def replace_var(match: re.Match[str]) -> str:
+        return sanitized_context[match.group(1)]
+
+    rendered = TEMPLATE_VAR_RE.sub(replace_var, command)
+    
+    # Final validation of the rendered command
+    _validate_command_template(rendered)
+    
     return rendered
 
 
