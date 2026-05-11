@@ -552,7 +552,6 @@ Hệ thống được thiết kế theo mô hình kiến trúc phân lớp (Laye
    Oracle RAC DB  |  MongoDB Cluster  |  Hadoop Cluster  |  WSO2/HAProxy/Kafka/App
 
 2.2 Luồng Xử lý
-Scheduler khởi động lúc 07:55 để chuẩn bị kết nối
 08:00: Check Engine bắt đầu chạy song song các kiểm tra trên tất cả hệ thống
 Mỗi check module kết nối SSH tới máy chủ mục tiêu, thực thi lệnh và phân tích kết quả
 Kết quả được so sánh với ngưỡng chuẩn (threshold) được cấu hình sẵn

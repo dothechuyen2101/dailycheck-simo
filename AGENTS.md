@@ -26,7 +26,6 @@ python main.py --config path.yaml   # custom config file
 
 ## Scheduler
 - APScheduler `CronTrigger`, runs every day at `general.check_time` (default "08:00")
-- Prep time `general.prep_time` ("07:55") is for SSH connection warming only
 - Misfire grace time: 300s; skip new trigger if previous run still active
 - Each enabled dynamic module has its own daily APScheduler job and per-module overlap protection
 
@@ -36,6 +35,27 @@ python main.py --config path.yaml   # custom config file
 - Uses secret key from `dashboard.secret_key`
 - Dynamic module UI: `/modules`, `/modules/new`, `/modules/<id>/edit`
 - Dynamic module API: `/api/modules`, `/api/modules/<id>`, `/api/modules/<id>/trigger`, `/api/modules/<id>/runs`
+- Protected routes require login: `@login_required` decorator
+- Admin routes require admin role: `@admin_required` decorator
+- Login page: `/login` (GET/POST)
+- Logout: `/logout`
+
+## Authentication & RBAC
+- User model stored in SQLite table `users`
+- Passwords hashed with PBKDF2-HMAC-SHA256 (260,000 iterations) + random salt
+- Two roles: `admin` (full access), `user` (own modules only)
+- Session management via Flask session (user_id, username, role)
+- Default admin created on first run if no users exist
+- Config settings:
+  - `auth.admin_username` (default: "admin")
+  - `auth.admin_password` (default: "admin123" → **CHANGE in production**)
+- User management API: `/api/users` (admin only)
+- Module ownership tracked via `dynamic_modules.created_by` column
+- Route protection:
+  - `@login_required`: any authenticated user
+  - `@admin_required`: admin role only, else abort(403)
+  - Built-in modules: admin can trigger, users cannot
+  - User modules: creator + admin can edit/delete/trigger
 
 ## Check Modules
 - `src/checks/oracle_checks.py` – 11 steps via SSH/sqlplus + optional cx_Oracle
@@ -55,6 +75,10 @@ python main.py --config path.yaml   # custom config file
 - Passwords in config are placeholders (`CHANGE_ME`) – must be replaced for production
 - `.gitignore` excludes `config/config.yaml` and `data/`
 - Dynamic module SSH passwords are stored encrypted in SQLite and decrypted only at runtime
+- **User passwords**: PBKDF2-HMAC-SHA256 hashed + random salt (260k iterations), never stored plaintext
+- **Default credentials**: MUST change `auth.admin_password` in config before production
+- **Dashboard secret_key**: Must be set to random strong value in production (used for session encryption)
+- **Module ownership**: Users can only edit/delete their own modules; admins can manage all
 
 ## Docker
 ```bash

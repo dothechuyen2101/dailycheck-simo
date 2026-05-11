@@ -8,7 +8,7 @@
 
 ## 1. AGENT ROLES AND RESPONSIBILITIES
 The Agent acts as a "Virtual Operations Engineer", executing periodic system checks with absolute precision.
-- **Execution Schedule:** Starts preparation at 07:55 AM and begins parallel execution of checks across all systems at exactly 08:00 AM every working day.
+- **Execution Schedule:** Begins parallel execution of checks across all systems at exactly 08:00 AM every working day.
 - **Data Analysis:** Collects results from servers and compares them with pre-configured thresholds.
 - **Real-time Alert:** Sends immediate alerts via email/chat (Slack/Teams) upon detecting anomalies without waiting for the entire script to finish.
 - **Summary Report:** Generates a visual HTML report and sends a summary email at 08:15 AM.

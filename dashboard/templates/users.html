@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}Quản lý Users – SIMO Daily Check{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h5 class="fw-bold mb-0" style="color:#e2e8f0;">Quản lý Users</h5>
+    <small class="text-muted">Tạo và phân quyền tài khoản đăng nhập</small>
+  </div>
+  <button class="btn btn-primary btn-sm" onclick="openCreateModal()">+ Thêm User</button>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0" id="usersTable">
+      <thead class="table-dark">
+        <tr>
+          <th>Username</th>
+          <th>Tên hiển thị</th>
+          <th>Vai trò</th>
+          <th>Trạng thái</th>
+          <th>Modules đã tạo</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr id="user-row-{{ u.id }}">
+          <td class="fw-bold">{{ u.username }}</td>
+          <td>{{ u.display_name }}</td>
+          <td>
+            <span class="badge" style="{% if u.role == 'admin' %}background:rgba(168,85,247,0.3);color:#c084fc;{% else %}background:rgba(79,142,247,0.25);color:#93c5fd;{% endif %}">
+              {{ '👑 admin' if u.role == 'admin' else '👤 user' }}
+            </span>
+          </td>
+          <td>
+            {% if u.enabled %}
+            <span class="badge bg-success">Active</span>
+            {% else %}
+            <span class="badge bg-secondary">Disabled</span>
+            {% endif %}
+          </td>
+          <td>
+            <small class="text-muted" id="module-count-{{ u.id }}">–</small>
+          </td>
+          <td class="text-end">
+            <button class="btn btn-outline-primary btn-sm py-0 me-1"
+                    onclick="openEditModal({{ u.id }}, '{{ u.username }}', '{{ u.display_name }}', '{{ u.role }}', {{ 'true' if u.enabled else 'false' }})">
+              Sửa
+            </button>
+            {% if u.id != current_user.id %}
+            <button class="btn btn-outline-danger btn-sm py-0"
+                    onclick="deleteUser({{ u.id }}, '{{ u.username }}')">
+              Xóa
+            </button>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center py-4 text-muted">Chưa có user nào.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Create / Edit Modal -->
+<div class="modal fade" id="userModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content" style="background:#1a1d2e;border:1px solid rgba(255,255,255,0.1);color:#e2e8f0;">
+      <div class="modal-header" style="border-color:rgba(255,255,255,0.1);">
+        <h5 class="modal-title" id="modalTitle">Thêm User</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="modalError" class="alert" style="display:none;background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.3);color:#fca5a5;"></div>
+        <input type="hidden" id="editUserId" value="">
+
+        <div class="mb-3">
+          <label class="form-label text-muted small">Username</label>
+          <input type="text" id="fUsername" class="form-control" style="background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.12);color:#e2e8f0;"
+                 placeholder="username (không thay đổi được sau khi tạo)">
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-muted small">Tên hiển thị</label>
+          <input type="text" id="fDisplayName" class="form-control" style="background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.12);color:#e2e8f0;"
+                 placeholder="Tên hiển thị">
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-muted small">Mật khẩu <span id="pwHint" class="text-muted">(để trống = không đổi)</span></label>
+          <input type="password" id="fPassword" class="form-control" style="background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.12);color:#e2e8f0;"
+                 placeholder="Mật khẩu mới…">
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-muted small">Vai trò</label>
+          <select id="fRole" class="form-select" style="background:#1a1d2e;border-color:rgba(255,255,255,0.12);color:#e2e8f0;">
+            <option value="user">👤 user – Chỉ quản lý dynamic modules của mình</option>
+            <option value="admin">👑 admin – Toàn quyền hệ thống</option>
+          </select>
+        </div>
+        <div class="mb-1" id="enabledRow">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="fEnabled" checked>
+            <label class="form-check-label text-muted small" for="fEnabled">Kích hoạt tài khoản</label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" style="border-color:rgba(255,255,255,0.1);">
+        <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Huỷ</button>
+        <button class="btn btn-primary btn-sm" id="saveBtn" onclick="saveUser()">Lưu</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Change own password modal -->
+<div class="modal fade" id="pwModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content" style="background:#1a1d2e;border:1px solid rgba(255,255,255,0.1);color:#e2e8f0;">
+      <div class="modal-header" style="border-color:rgba(255,255,255,0.1);">
+        <h5 class="modal-title">Đổi mật khẩu của tôi</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="pwError" class="alert" style="display:none;background:rgba(239,68,68,0.15);border-color:rgba(239,68,68,0.3);color:#fca5a5;"></div>
+        <div class="mb-3">
+          <label class="form-label text-muted small">Mật khẩu hiện tại</label>
+          <input type="password" id="pwCurrent" class="form-control" style="background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.12);color:#e2e8f0;">
+        </div>
+        <div class="mb-3">
+          <label class="form-label text-muted small">Mật khẩu mới</label>
+          <input type="password" id="pwNew" class="form-control" style="background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.12);color:#e2e8f0;">
+        </div>
+      </div>
+      <div class="modal-footer" style="border-color:rgba(255,255,255,0.1);">
+        <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Huỷ</button>
+        <button class="btn btn-primary btn-sm" onclick="changeMyPassword()">Đổi</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const userModal = new bootstrap.Modal(document.getElementById('userModal'));
+const pwModal   = new bootstrap.Modal(document.getElementById('pwModal'));
+
+// Load module counts
+fetch('/api/modules').then(r => r.json()).then(modules => {
+  const counts = {};
+  modules.forEach(m => { counts[m.created_by] = (counts[m.created_by] || 0) + 1; });
+  document.querySelectorAll('[id^="module-count-"]').forEach(el => {
+    // we need the username for each row
+  });
+  // Map username -> count
+  {% for u in users %}
+  document.getElementById('module-count-{{ u.id }}').textContent =
+    (counts['{{ u.username }}'] || 0) + ' module(s)';
+  {% endfor %}
+});
+
+function openCreateModal() {
+  document.getElementById('modalTitle').textContent = 'Thêm User mới';
+  document.getElementById('editUserId').value = '';
+  document.getElementById('fUsername').value = '';
+  document.getElementById('fUsername').disabled = false;
+  document.getElementById('fDisplayName').value = '';
+  document.getElementById('fPassword').value = '';
+  document.getElementById('fRole').value = 'user';
+  document.getElementById('fEnabled').checked = true;
+  document.getElementById('enabledRow').style.display = 'none';
+  document.getElementById('pwHint').textContent = '';
+  document.getElementById('modalError').style.display = 'none';
+  userModal.show();
+}
+
+function openEditModal(id, username, displayName, role, enabled) {
+  document.getElementById('modalTitle').textContent = 'Chỉnh sửa – ' + username;
+  document.getElementById('editUserId').value = id;
+  document.getElementById('fUsername').value = username;
+  document.getElementById('fUsername').disabled = true;
+  document.getElementById('fDisplayName').value = displayName;
+  document.getElementById('fPassword').value = '';
+  document.getElementById('fRole').value = role;
+  document.getElementById('fEnabled').checked = enabled;
+  document.getElementById('enabledRow').style.display = '';
+  document.getElementById('pwHint').textContent = '(để trống = không đổi)';
+  document.getElementById('modalError').style.display = 'none';
+  userModal.show();
+}
+
+async function saveUser() {
+  const id = document.getElementById('editUserId').value;
+  const body = {
+    username:     document.getElementById('fUsername').value.trim(),
+    display_name: document.getElementById('fDisplayName').value.trim(),
+    role:         document.getElementById('fRole').value,
+    enabled:      document.getElementById('fEnabled').checked,
+    password:     document.getElementById('fPassword').value || null,
+  };
+
+  const isCreate = !id;
+  const url  = isCreate ? '/api/users' : '/api/users/' + id;
+  const method = isCreate ? 'POST' : 'PUT';
+
+  const res = await fetch(url, {
+    method,
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const errEl = document.getElementById('modalError');
+    errEl.textContent = data.error || 'Lỗi không xác định';
+    errEl.style.display = '';
+    return;
+  }
+  userModal.hide();
+  location.reload();
+}
+
+async function deleteUser(id, username) {
+  if (!confirm('Xóa user "' + username + '"? Hành động không thể hoàn tác.')) return;
+  const res = await fetch('/api/users/' + id, { method: 'DELETE' });
+  const data = await res.json();
+  if (!res.ok) { alert(data.error || 'Lỗi khi xóa.'); return; }
+  document.getElementById('user-row-' + id)?.remove();
+}
+
+async function changeMyPassword() {
+  const body = {
+    current_password: document.getElementById('pwCurrent').value,
+    new_password: document.getElementById('pwNew').value,
+  };
+  const res = await fetch('/api/users/me/password', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const errEl = document.getElementById('pwError');
+    errEl.textContent = data.error || 'Lỗi không xác định';
+    errEl.style.display = '';
+    return;
+  }
+  pwModal.hide();
+  alert('Đổi mật khẩu thành công!');
+}
+</script>
+{% endblock %}

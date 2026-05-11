@@ -4,28 +4,46 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <div>
-    <h5 class="fw-bold mb-0">Dynamic Modules</h5>
+    <h5 class="fw-bold mb-0" style="color:#e2e8f0;">Dynamic Modules</h5>
     <small class="text-muted">User-defined SSH check modules</small>
   </div>
-  <a href="/modules/new" class="btn btn-primary btn-sm">+ New Module</a>
+  <a href="/modules/new" class="btn btn-primary btn-sm" id="newModuleBtn">+ New Module</a>
 </div>
 
 <div class="card">
   <div class="table-responsive">
     <table class="table table-sm table-hover mb-0">
       <thead class="table-dark">
-        <tr><th>Name</th><th>System</th><th>Schedule</th><th>Recipients</th><th>Status</th><th>Next Run</th><th>Last Run</th><th></th></tr>
+        <tr>
+          <th>Name</th>
+          <th>System</th>
+          <th>Schedule</th>
+          <th>Recipients</th>
+          {% if is_admin %}<th>Owner</th>{% endif %}
+          <th>Status</th>
+          <th>Next Run</th>
+          <th>Last Run</th>
+          <th></th>
+        </tr>
       </thead>
       <tbody>
         {% for module in modules %}
         <tr>
-          <td>{{ module.name }}</td>
+          <td class="fw-bold">{{ module.name }}</td>
           <td>{{ module.system_name }}</td>
           <td><small>{{ module.daily_time }}<br>{{ module.timezone }}</small></td>
           <td><small>{{ module.recipient_emails|join(', ') }}</small></td>
+          {% if is_admin %}
+          <td>
+            <small class="text-muted">{{ module.created_by }}</small>
+          </td>
+          {% endif %}
           <td>
             {% if module.is_running %}
-            <span class="badge bg-secondary">Running</span>
+            <span class="badge bg-secondary">
+              <span class="spinner-border spinner-border-sm" style="width:.6rem;height:.6rem;"></span>
+              Running
+            </span>
             {% elif module.enabled %}
             <span class="badge bg-success">Enabled</span>
             {% else %}
@@ -35,15 +53,34 @@
           <td><small>{{ module.next_run[:19].replace('T',' ') if module.next_run else '–' }}</small></td>
           <td>
             {% if module.last_run %}
-            <a href="/run/{{ module.last_run.run_id }}" class="btn btn-outline-secondary btn-sm py-0">{{ module.last_run.overall_status }}</a>
+            {% if is_admin %}
+            <a href="/run/{{ module.last_run.run_id }}" class="btn btn-outline-secondary btn-sm py-0">
+              {{ module.last_run.overall_status }}
+            </a>
+            {% else %}
+            <span class="badge"
+              style="{% if module.last_run.overall_status == 'OK' %}background:rgba(34,197,94,0.2);color:#86efac;
+                     {% elif module.last_run.overall_status == 'WARNING' %}background:rgba(234,179,8,0.2);color:#fde047;
+                     {% elif module.last_run.overall_status == 'CRITICAL' %}background:rgba(239,68,68,0.2);color:#fca5a5;
+                     {% else %}background:rgba(100,116,139,0.2);color:#94a3b8;{% endif %}">
+              {{ module.last_run.overall_status }}
+            </span>
+            {% endif %}
             {% else %}
             <small class="text-muted">–</small>
             {% endif %}
           </td>
-          <td><a href="/modules/{{ module.id }}/edit" class="btn btn-outline-primary btn-sm py-0">Edit</a></td>
+          <td>
+            <a href="/modules/{{ module.id }}/edit" class="btn btn-outline-primary btn-sm py-0">Edit</a>
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="8" class="text-center py-4 text-muted">Chưa có dynamic module nào.</td></tr>
+        <tr>
+          <td colspan="{{ 9 if is_admin else 8 }}" class="text-center py-5 text-muted">
+            <div style="font-size:36px;margin-bottom:8px;">📦</div>
+            Chưa có dynamic module nào. <a href="/modules/new" class="text-decoration-none">Tạo module đầu tiên →</a>
+          </td>
+        </tr>
         {% endfor %}
       </tbody>
     </table>

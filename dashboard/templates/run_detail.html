@@ -3,7 +3,9 @@
 
 {% block content %}
 <div class="mb-3">
-  <a href="/" class="btn btn-outline-secondary btn-sm">← Quay lại Dashboard</a>
+  <a href="{{ url_for('index') if is_admin else url_for('modules_index') }}" class="btn btn-outline-secondary btn-sm">
+    ← {{ 'Quay lại Dashboard' if is_admin else 'Quay lại Dynamic Modules' }}
+  </a>
 </div>
 
 {% if run_info %}

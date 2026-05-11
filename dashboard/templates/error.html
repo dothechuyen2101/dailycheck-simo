@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Lỗi {{ code }} – SIMO Daily Check{% endblock %}
+{% block content %}
+<div class="d-flex align-items-center justify-content-center" style="min-height:60vh;">
+  <div class="text-center">
+    <div style="font-size:72px;line-height:1;margin-bottom:16px;">
+      {% if code == 403 %}🔒{% elif code == 404 %}🔍{% else %}⚠️{% endif %}
+    </div>
+    <h2 style="color:#e2e8f0;font-weight:700;">{{ code }}</h2>
+    <p class="text-muted mb-4">{{ message }}</p>
+    <a href="{{ url_for('index') if is_admin else url_for('modules_index') }}"
+       class="btn btn-outline-primary btn-sm">← Về trang chủ</a>
+  </div>
+</div>
+{% endblock %}

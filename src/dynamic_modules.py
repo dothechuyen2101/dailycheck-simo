@@ -62,6 +62,7 @@ class DynamicModule:
     template_key: str = "custom"
     hosts: list[DynamicModuleHost] = field(default_factory=list)
     steps: list[DynamicModuleStep] = field(default_factory=list)
+    created_by: str = "admin"
     created_at: str = ""
     updated_at: str = ""
 
@@ -380,13 +381,21 @@ class DynamicModuleStore:
         if column not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
-    def list_modules(self) -> list[DynamicModule]:
+    def list_modules(self, created_by: Optional[str] = None) -> list[DynamicModule]:
+        """List modules. If created_by is given, only return that user's modules."""
         with self._conn() as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute("""
-                SELECT * FROM dynamic_modules
-                ORDER BY name COLLATE NOCASE
-            """).fetchall()
+            if created_by is not None:
+                rows = conn.execute("""
+                    SELECT * FROM dynamic_modules
+                    WHERE created_by = ? COLLATE NOCASE
+                    ORDER BY name COLLATE NOCASE
+                """, (created_by,)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT * FROM dynamic_modules
+                    ORDER BY name COLLATE NOCASE
+                """).fetchall()
         return [self.get_module(row["id"]) for row in rows]
 
     def list_enabled_modules(self) -> list[DynamicModule]:
@@ -423,6 +432,7 @@ class DynamicModuleStore:
             timezone=module_row["timezone"],
             daily_time=module_row["daily_time"],
             recipient_emails=json.loads(module_row["recipient_emails"] or "[]"),
+            created_by=module_row["created_by"] if "created_by" in module_row.keys() else "admin",
             hosts=[
                 DynamicModuleHost(
                     id=row["id"],
@@ -452,13 +462,13 @@ class DynamicModuleStore:
             updated_at=module_row["updated_at"],
         )
 
-    def create_module(self, payload: dict[str, Any]) -> DynamicModule:
+    def create_module(self, payload: dict[str, Any], created_by: str = "admin") -> DynamicModule:
         normalized = validate_module_payload(payload)
         with self._conn() as conn:
             cursor = conn.execute("""
                 INSERT INTO dynamic_modules
-                    (name, system_name, template_key, enabled, timezone, daily_time, recipient_emails)
-                VALUES (?,?,?,?,?,?,?)
+                    (name, system_name, template_key, enabled, timezone, daily_time, recipient_emails, created_by)
+                VALUES (?,?,?,?,?,?,?,?)
             """, (
                 normalized["name"],
                 normalized["system_name"],
@@ -467,6 +477,7 @@ class DynamicModuleStore:
                 normalized["timezone"],
                 normalized["daily_time"],
                 json.dumps(normalized["recipient_emails"], ensure_ascii=False),
+                created_by,
             ))
             module_id = cursor.lastrowid
             self._replace_hosts(conn, module_id, normalized["hosts"])

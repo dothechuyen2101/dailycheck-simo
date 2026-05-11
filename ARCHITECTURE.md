@@ -254,7 +254,6 @@ Orchestrator.run_daily_check()
 ```
 Time        Activity
 ────────────────────────────────────────────────────────
-07:55:00   Prep job (SSH connection warming - không làm gì khác)
 08:00:00   [SCHEDULED] Daily Check bắt đầu
            │
            ├─ T0+0s     Orchestrator khởi tạo, tạo run_id
@@ -557,9 +556,126 @@ class RunSummary:
 
 ---
 
-## 7. Cơ chế xử lý song song
+## 7. Xác thực & Phân quyền (Authentication & RBAC)
 
-### 7.1. ThreadPoolExecutor
+### 7.1. User Model
+
+```python
+@dataclass
+class User:
+    id: int
+    username: str
+    role: str                # "admin" or "user"
+    display_name: str = ""
+    enabled: bool = True
+```
+
+### 7.2. SQLite Schema – Users
+
+```sql
+CREATE TABLE users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    display_name  TEXT    NOT NULL DEFAULT '',
+    role          TEXT    NOT NULL DEFAULT 'user',
+    password_hash TEXT    NOT NULL,
+    password_salt TEXT    NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### 7.3. Password Hashing
+
+```python
+# src/auth.py
+def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    """Return (hex_hash, hex_salt) via PBKDF2-HMAC-SHA256."""
+    if salt is None:
+        salt = os.urandom(16).hex()
+    hashed = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations=260_000,
+    ).hex()
+    return hashed, salt
+
+# Verification:
+# stored_hash, stored_salt = get from DB
+# input_hash, _ = _hash_password(input_password, stored_salt)
+# if input_hash == stored_hash → password OK
+```
+
+### 7.4. Roles & Permissions
+
+| Tính năng | Admin | User |
+|----------|-------|------|
+| Xem runs/reports | ✓ | ✓ |
+| Trigger built-in check | ✓ | ✗ |
+| Xem tất cả modules | ✓ | ✓ (only own) |
+| Tạo module | ✓ | ✓ |
+| Edit module | ✓ (all) | ✓ (own) |
+| Delete module | ✓ (all) | ✓ (own) |
+| Trigger module | ✓ (all) | ✓ (own) |
+| Manage users | ✓ | ✗ |
+
+### 7.5. Session Flow
+
+```
+1. User truy cập http://host:5000/
+   ├─ Không có session → redirect /login
+
+2. /login: Hiển thị form username + password
+
+3. POST /login:
+   ├─ verify_password(username, password)
+   ├─ Nếu OK:
+   │  ├─ login_user(user)  # Session: user_id, username, role
+   │  └─ redirect next param (hoặc "/")
+   ├─ Nếu FAIL: hiển thị lỗi
+
+4. Dashboard (protected routes):
+   ├─ @login_required: cần session.user_id
+   ├─ @admin_required: cần role=="admin"
+   └─ created_by: mỗi module ghi nhận creator
+
+5. /logout: session.clear(), redirect /login
+```
+
+### 7.6. Decorator cho Routes
+
+```python
+# src/auth.py
+
+@login_required
+def protected_view():
+    user = get_current_user()  # User hoặc None
+    # ...
+
+@admin_required
+def admin_view():
+    # Tự động kiểm tra role=="admin"
+    # Nếu không → abort(403)
+    # ...
+```
+
+### 7.7. Default Admin
+
+```python
+# Khi khởi động, nếu users table trống:
+admin_username = get("auth.admin_username", "admin")
+admin_password = get("auth.admin_password", "admin123")  # CHANGE_ME!
+
+# Tạo user admin mặc định
+create_user(admin_username, admin_password, role="admin", display_name="Administrator")
+```
+
+---
+
+## 8. Cơ chế xử lý song song
+
+### 8.1. ThreadPoolExecutor
 
 ```python
 # Trong orchestrator.py
@@ -584,7 +700,7 @@ with ThreadPoolExecutor(max_workers=min(10, len(modules))) as executor:
             logger.exception(f"Module [{module_name}] failed: {e}")
 ```
 
-### 7.2. SSH Connection Pool
+### 8.2. SSH Connection Pool
 
 - **Mỗi check module** tự quản lý SSH connections cho các host của nó
 - `ssh_connect(host_cfg)` là context manager đảm bảo `close()` được gọi
@@ -592,7 +708,7 @@ with ThreadPoolExecutor(max_workers=min(10, len(modules))) as executor:
 - Timeout mặc định: 30s connect, 60s command (có thể override per-command)
 - Dynamic modules dùng `SSHClient` trực tiếp với host config lưu trong SQLite
 
-### 7.3. Anti-overlap
+### 8.3. Anti-overlap
 
 ```python
 # scheduler.py
@@ -616,7 +732,7 @@ def _job_wrapper():
 
 ---
 
-## 8. Scheduler & Timing
+## 9. Scheduler & Timing
 
 ### 8.1. APScheduler Configuration
 
@@ -640,13 +756,7 @@ scheduler.add_job(
 - Ngoài job `daily_check`, mỗi dynamic module enabled tạo thêm một job `dynamic_module_<id>`
 - `resync_dynamic_jobs()` được gọi sau create/update/delete module
 
-### 8.2. Prep Time (07:55)
-
-- Hiện tại `prep_time` trong config nhưng **chưa được sử dụng** trong code
-- Mục đích thiết kế: SSH connection warming vào 07:55, để 08:00 chạy nhanh hơn
-- Có thể implement trong tương lai
-
-### 8.3. Các thành phần chạy độc lập
+### 8.2. Các thành phần chạy độc lập
 
 ```bash
 python main.py --run-now      # Chạy 1 lần, không scheduler, không dashboard
@@ -657,7 +767,7 @@ python main.py                # Cả hai (default)
 
 ---
 
-## 9. Dashboard & API
+## 10. Dashboard & API
 
 ### 9.1. Flask Routes
 
@@ -717,7 +827,7 @@ curl http://localhost:5000/api/status
 
 ---
 
-## 10. Alert & Notification
+## 11. Alert & Notification
 
 ### 10.1. Alert Flow
 
@@ -751,7 +861,7 @@ if should_alert():
 
 ---
 
-## 11. Bảo mật
+## 12. Bảo mật
 
 ### 11.1. SSH Authentication
 

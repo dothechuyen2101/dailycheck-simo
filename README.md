@@ -1,505 +1,537 @@
 # SIMO Daily Check System
+ 
+ Hệ thống kiểm tra tự động hàng ngày cho Oracle RAC, MongoDB, Hadoop, Application và **Dynamic Modules** (module do người dùng tự định nghĩa).
+ 
+ Tài liệu này đóng vai trò là **project description**: công nghệ sử dụng, cấu trúc project, logic vận hành, hướng dẫn cài đặt/vận hành, Docker, cấu hình và xử lý sự cố.
+ 
+ ## Mục lục
+ 
+ 1. [Tổng quan](#1-tổng-quan)
+ 2. [Công nghệ sử dụng](#2-công-nghệ-sử-dụng)
+ 3. [Cấu trúc project](#3-cấu-trúc-project)
+ 4. [Luồng vận hành (Operational Logic)](#4-luồng-vận-hành-operational-logic)
+ 5. [Cấu hình](#5-cấu-hình)
+ 6. [Cài đặt](#6-cài-đặt)
+ 7. [Chạy hệ thống (Usage)](#7-chạy-hệ-thống-usage)
+ 8. [Dashboard & API](#8-dashboard--api)
+ 9. [Dynamic Modules](#9-dynamic-modules)
+ 10. [Dữ liệu, báo cáo, logs](#10-dữ-liệu-báo-cáo-logs)
+ 11. [Docker](#11-docker)
+ 12. [Bảo mật](#12-bảo-mật)
+ 13. [Testing](#13-testing)
+ 14. [Xử lý sự cố](#14-xử-lý-sự-cố)
+ 
+ ---
+ 
+ ## 1. Tổng quan
+ 
+ **SIMO Daily Check** tự động chạy các kiểm tra hạ tầng theo lịch (APScheduler) và hiển thị kết quả trên Dashboard (Flask). Hệ thống gồm:
+ 
+ - **Built-in checks** (cố định theo code): Oracle, MongoDB, Hadoop, Application
+ - **Dynamic modules** (tự định nghĩa): tạo/sửa qua UI, lưu trong SQLite, chạy theo lịch riêng
+ 
+ **Trạng thái tổng thể của một lần chạy (overall)**:
+ 
+ - `CRITICAL` nếu có ít nhất một kết quả `CRITICAL` hoặc `ERROR`
+ - `WARNING` nếu có `WARNING` và không có `CRITICAL/ERROR`
+ - `OK` nếu tất cả đều `OK`
+ 
+ **Entry point:** `main.py`
+ 
+ ```bash
+ python main.py                      # chạy scheduler + dashboard (mặc định)
+ python main.py --run-now            # chạy 1 lần ngay và thoát
+ python main.py --dashboard          # chỉ chạy dashboard
+ python main.py --scheduler          # chỉ chạy scheduler
+ python main.py --config path.yaml   # dùng config tùy chỉnh
+ ```
+ 
+ Tài liệu kiến trúc chi tiết tham khảo thêm: `ARCHITECTURE.md`.
+ 
+ ---
+ 
+ ## 2. Công nghệ sử dụng
+ 
+ - **Python**: runtime chính (Docker image dùng `python:3.11-slim`)
+ - **SSH / Remote Commands**: `paramiko`
+ - **Scheduler**: `APScheduler` (`BackgroundScheduler` + `CronTrigger`)
+ - **Web Dashboard**: `Flask`
+ - **Config**: `PyYAML` (file `config/config.yaml`)
+ - **Lưu trữ**: `SQLite` (mặc định `data/dailycheck.db`)
+ - **Mã hóa secrets**: `cryptography` (dùng cho password của dynamic module)
+ - **Tiện ích thời gian**: `python-dateutil`
+ 
+ Dependencies nằm trong `requirements.txt`.
+ 
+ ---
+ 
+ ## 3. Cấu trúc project
+ 
+ ```
+ dailycheck_simo/
+ ├── main.py                  # Entry point + CLI
+ ├── requirements.txt         # Python dependencies
+ ├── Dockerfile               # Build image
+ ├── docker-compose.yml       # Run container (mount data/logs/config/ssh keys)
+ ├── config/
+ │   └── config.yaml          # Cấu hình thực tế (bị gitignore)
+ ├── src/
+ │   ├── config_manager.py    # load YAML + get("a.b.c")
+ │   ├── logger.py            # setup_logging + ResultStore (SQLite) + dataclasses
+ │   ├── ssh_manager.py       # SSHClient wrapper (Paramiko)
+ │   ├── orchestrator.py      # chạy built-in + finalize + report
+ │   ├── scheduler.py         # APScheduler + anti-overlap + trigger
+ │   ├── alert_manager.py     # gửi email/webhook
+ │   ├── report_generator.py  # tạo HTML report + subject
+ │   ├── security.py          # encrypt/decrypt secrets (dynamic module)
+ │   ├── dynamic_modules.py   # CRUD SQLite + validate + chạy module động
+ │   └── checks/
+ │       ├── oracle_checks.py
+ │       ├── mongo_checks.py
+ │       ├── hadoop_checks.py
+ │       └── app_checks.py
+ ├── dashboard/
+ │   ├── app.py               # Flask routes + APIs
+ │   └── templates/           # UI
+ ├── data/
+ │   ├── dailycheck.db        # SQLite (runtime)
+ │   └── reports/             # report_<run_id>.html
+ └── logs/                    # log files (runtime)
+ ```
+ 
+ Lưu ý:
+ 
+ - `config/config.yaml`, `data/`, `logs/` bị gitignore theo `.gitignore`.
+ 
+ ---
+ 
+ ## 4. Luồng vận hành (Operational Logic)
+ 
+ ### 4.1. Khởi động
+ 
+ `main.py`:
+ 
+ - Load config: `src.config_manager.load_config()`
+ - Setup logging: `src.logger.setup_logging()`
+ - Chạy theo mode:
+   - `--run-now`: chạy 1 lần và exit
+   - default: scheduler + dashboard
+   - `--dashboard`: chỉ Flask
+   - `--scheduler`: chỉ scheduler
+ 
+ ### 4.2. Built-in run (Daily Check)
+ 
+ `src.orchestrator.run_daily_check()`:
+ 
+ - Tạo `run_id` theo format `YYYYMMDD_HHMMSS_<uuid6>`
+ - Chạy song song 4 nhóm checks bằng `ThreadPoolExecutor`
+ - Gom `List[CheckResult]`
+ - Persist:
+   - lưu từng `CheckResult` vào SQLite
+   - update `RunSummary` (counts + overall_status)
+ - Tạo HTML report và gửi thông báo
+ - Lưu HTML report vào `data/reports/report_<run_id>.html`
+ 
+ ### 4.3. Scheduler
+ 
+ `src.scheduler.start_scheduler()`:
+ 
+ - Tạo job `daily_check` theo `general.check_time` và `general.timezone`
+ - `misfire_grace_time=300` (trễ tối đa 5 phút)
+ - Chống overlap:
+   - nếu `_is_running=True` thì bỏ qua trigger mới
+ 
+ Ngoài ra scheduler còn:
+ 
+ - Tự tạo job cho mỗi dynamic module enabled: `dynamic_module_<id>` chạy theo `module.daily_time` + `module.timezone`
+ - Chống overlap theo từng module: bỏ qua nếu module đó đang chạy
+ 
+ ---
+ 
+ ## 5. Cấu hình
+ 
+ ### 5.1. File config
+ 
+ Mặc định: `config/config.yaml`.
+ 
+ **Lưu ý:** file này không commit lên Git (`.gitignore`).
+ 
+ Các nhóm cấu hình thường dùng:
+ 
+ - `general.*`: time, timezone, max_workers, timeout, thư mục data...
+ - `dashboard.*`: host/port/secret_key
+ - `notifications.*`: email/webhook
+ - `oracle.*`, `mongodb.*`, `hadoop.*`, `applications.*`: hosts + ssh settings
+ - `security.encryption_key`: key mã hóa password cho dynamic modules
+ 
+ ### 5.2. Ví dụ cấu hình tối thiểu (tham khảo)
+ 
+ ```yaml
+ general:
+   check_time: "08:00"
+   timezone: "Asia/Ho_Chi_Minh"
+   max_workers: 10
+   ssh_timeout: 30
+   command_timeout: 60
+   data_dir: "data"
+ 
+ dashboard:
+   host: "0.0.0.0"
+   port: 5000
+   debug: false
+   secret_key: "CHANGE_ME_USE_RANDOM_STRING"
+ 
+ security:
+   encryption_key: "CHANGE_ME_DYNAMIC_MODULE_SECRET"
+ 
+ notifications:
+   email:
+     enabled: true
+     smtp_host: "smtp.company.com"
+     smtp_port: 587
+     smtp_use_tls: true
+     smtp_use_ssl: false
+     sender: "dailycheck@company.com"
+     username: "dailycheck@company.com"
+     password: "CHANGE_ME"
+     smtp_require_auth: true
+     recipients:
+       - "ops@company.com"
+   webhook:
+     enabled: false
+     url: "CHANGE_ME"
+ ```
+ 
+ ---
+ 
+ ## 6. Cài đặt
+ 
+ ### 6.1. Yêu cầu hệ thống
+ 
+ - **OS:** Linux (Ubuntu 20.04+, CentOS 7+)
+ - **Python:** 3.9+ (khuyến nghị 3.11)
+ - **Network/Firewall:** máy chạy dailycheck SSH được đến các host target
+ - **SSH:** khuyến nghị SSH key; vẫn hỗ trợ password
+ 
+ ### 6.2. Cài đặt bằng virtualenv
+ 
+ ```bash
+ python3 -m venv venv
+ source venv/bin/activate
+ pip install -r requirements.txt
+ ```
+ 
+ ### 6.3. Chuẩn bị SSH
+ 
+ Khuyến nghị SSH key:
+ 
+ ```bash
+ ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
+ ssh-copy-id -i ~/.ssh/id_rsa.pub user@<ip>
+ ```
+ 
+ Nếu dùng password:
+ 
+ - Với built-in checks: cấu hình password trong config (tùy theo từng host/ssh defaults)
+ - Với dynamic modules: password nhập qua dashboard và được mã hóa lưu vào SQLite
+ 
+ ---
+ 
+ ## 7. Chạy hệ thống (Usage)
+ 
+ ### 7.1. Chạy 1 lần (manual)
+ 
+ ```bash
+ python main.py --run-now
+ ```
+ 
+ Exit code:
+ 
+ - `0` nếu overall `OK`
+ - `1` nếu `WARNING/CRITICAL/ERROR`
+ 
+ ### 7.2. Chạy production (scheduler + dashboard)
+ 
+ ```bash
+ python main.py
+ ```
+ 
+ ### 7.3. Chạy riêng dashboard hoặc scheduler
+ 
+ ```bash
+ python main.py --dashboard
+ python main.py --scheduler
+ ```
+ 
+ ### 7.4. Dùng config tùy chỉnh
+ 
+ ```bash
+ python main.py --config /path/to/config.yaml
+ ```
+ 
+ ---
+ 
+## 8. Xác thực & Phân quyền (Authentication & RBAC)
 
-Hệ thống kiểm tra tự động hàng ngày cho Oracle RAC, MongoDB, Hadoop và ứng dụng.
+### 8.1. Tổng quan
 
-## Mục lục
+- **Model user**: lưu trong SQLite bảng `users` cùng database chính
+- **Password hashing**: PBKDF2-HMAC-SHA256 (260,000 iterations) + salt ngẫu nhiên
+- **Roles**: 2 vai trò
+  - `admin`: toàn quyền (create/edit/delete modules, manage users)
+  - `user`: chỉ được xem/edit/trigger các module do chính mình tạo
+- **Session**: sử dụng Flask session (persistent, tuỳ cấu hình)
 
-1. [Yêu cầu hệ thống](#1-yêu-cầu-hệ-thống)
-2. [Cài đặt nhanh](#2-cài-đặt-nhanh)
-3. [Cài đặt chi tiết](#3-cài-đặt-chi-tiết)
-4. [Cấu hình](#4-cấu-hình)
-5. [Chạy hệ thống](#5-chạy-hệ-thống)
-6. [Dashboard](#6-dashboard)
-7. [Xem báo cáo](#7-xem-báo-cáo)
-8. [Docker](#8-docker)
-9. [Xử lý sự cố](#9-xử-lý-sự-cố)
+### 8.2. Mô hình dữ liệu User
 
----
-
-## 1. Yêu cầu hệ thống
-
-- **OS:** Linux (Ubuntu 20.04+, CentOS 7+)
-- **Python:** 3.9+
-- **SSH:** Truy cập vào các máy chủ Oracle, MongoDB, Hadoop, Application
-- **Network:** Các port cần thiết đã mở giữa hệ thống dailycheck và các máy chủ
-
-### Các máy chủ cần kiểm tra
-
-| Hệ thống | Số lượng Node | Port SSH |
-|----------|--------------|----------|
-| Oracle RAC | 2+ | 22 |
-| MongoDB | 2+ | 22 |
-| Hadoop | 3+ | 22 |
-| Application | 1-3+ mỗi ứng dụng | 22 |
-
----
-
-## 2. Cài đặt nhanh
-
-```bash
-# 1. Clone/Download project
-cd simo_dailycheck
-
-# 2. Tạo virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# 3. Cài đặt dependencies
-pip install -r requirements.txt
-
-# 4. Cấu hình SSH keys
-ssh-keygen -t rsa -b 4096
-ssh-copy-id user@oracle-server
-ssh-copy-id user@mongo-server
-# ... (lặp lại cho tất cả các máy chủ)
-
-# 5. Cấu hình config
-cp config/config.yaml config/config.yaml.backup
-# Chỉnh sửa config/config.yaml với thông tin thực tế
-
-# 6. Chạy thử
-python main.py --run-now
+```sql
+CREATE TABLE users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+    display_name  TEXT    NOT NULL DEFAULT '',
+    role          TEXT    NOT NULL DEFAULT 'user',
+    password_hash TEXT    NOT NULL,
+    password_salt TEXT    NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
----
-
-## 3. Cài đặt chi tiết
-
-### 3.1. Cài đặt Python và dependencies
-
-```bash
-# Ubuntu/Debian
-sudo apt update
-sudo apt install -y python3.9 python3-pip python3-venv
-
-# Tạo virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Cài đặt packages
-pip install -r requirements.txt
-```
-
-### 3.2. Cài đặt SSH Keys
-
-**Phương pháp 1: SSH Key (Khuyến nghị)**
-
-```bash
-# Tạo SSH key
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
-
-# Copy public key lên các máy chủ
-ssh-copy-id -i ~/.ssh/id_rsa.pub oracle@10.1.36.11
-ssh-copy-id -i ~/.ssh/id_rsa.pub oracle@10.1.36.12
-ssh-copy-id -i ~/.ssh/id_rsa.pub root@10.1.36.41
-# ... thêm các máy chủ khác
-```
-
-**Phương pháp 2: Password**
-
-Chỉnh sửa `config/config.yaml`:
-```yaml
-ssh_defaults:
-  password: "your_password_here"
-```
-
-### 3.3. Cấu trúc thư mục
-
-```
-simo_dailycheck/
-├── config/
-│   └── config.yaml          # File cấu hình chính
-├── data/
-│   ├── dailycheck.db        # SQLite database
-│   └── reports/             # Báo cáo HTML
-├── logs/                    # Log files
-├── src/
-│   ├── checks/              # Các module kiểm tra
-│   ├── config_manager.py
-│   ├── orchestrator.py
-│   ├── scheduler.py
-│   └── ...
-├── dashboard/               # Flask web dashboard
-├── main.py                  # Entry point
-├── requirements.txt
-├── docker-compose.yml
-└── Dockerfile
-```
-
----
-
-## 4. Cấu hình
-
-### 4.1. File cấu hình chính
-
-Mở file `config/config.yaml` và chỉnh sửa:
-
-```yaml
-# Cấu hình chung
-general:
-  check_time: "08:00"        # Giờ chạy kiểm tra (HH:MM)
-  ssh_timeout: 30            # Timeout SSH (giây)
-
-# SSH mặc định
-ssh_defaults:
-  port: 22
-  username: "oracle"
-  key_path: "~/.ssh/id_rsa"
-
-# Oracle RAC
-oracle:
-  db_name: "Simo_master"
-  hosts:
-    - name: "DB1"
-      ip: "10.1.36.11"
-      instance: "simo1"
-      ssh:
-        username: "oracle"
-        key_path: "~/.ssh/id_rsa"
-
-# MongoDB
-mongodb:
-  hosts:
-    - name: "Mongo1"
-      ip: "10.1.36.41"
-      ssh:
-        username: "root"
-        key_path: "~/.ssh/id_rsa"
-
-# Hadoop
-hadoop:
-  namenode_ip: "10.1.36.31"
-  nodes:
-    - name: "HadoopNode1"
-      ip: "10.1.36.31"
-      ssh:
-        username: "hdfs"
-        key_path: "~/.ssh/id_rsa"
-```
-
-### 4.2. Ngưỡng cảnh báo (Thresholds)
-
-```yaml
-thresholds:
-  disk_usage_max_pct: 90     # Cảnh báo disk >= 90%
-  asm_usage_max_pct: 90     # Cảnh báo ASM >= 90%
-  voting_disk_required: 3   # Cần 3 voting disk ONLINE
-  tablespace:
-    system_min_free_pct: 3   # SYSTEM/SYSAUX >= 3% free
-    undotbs_min_total_mb: 400 # UNDOTBS >= 400MB total
-    default_min_free_pct: 15 # Tablespace khác >= 15% free
-```
-
-### 4.3. Thông báo Email/Webhook
-
-```yaml
-security:
-  encryption_key: "CHANGE_ME_DYNAMIC_MODULE_SECRET"
-
-notifications:
-  email:
-    enabled: true
-    smtp_host: "smtp.company.com"
-    smtp_connect_host: ""   # Optional: IP/host actually used to connect if DNS for smtp_host is unavailable
-    smtp_port: 587
-    smtp_use_tls: true      # STARTTLS on plain SMTP ports like 587
-    smtp_use_ssl: false     # Implicit SSL, typically port 465
-    sender: "dailycheck@company.com"
-    username: "dailycheck@company.com"   # Optional: login name if different from sender
-    password: "CHANGE_ME"
-    smtp_require_auth: true # Set false for internal relay servers that do not support AUTH
-    recipients:
-      - "ops@company.com"
-
-  webhook:
-    enabled: true
-    url: "https://hooks.slack.com/services/XXX"
-```
-
-### 4.4. Dynamic Modules
-
-- Built-in Oracle, MongoDB, Hadoop, and Application checks remain file-configured.
-- New user-defined modules are managed from the dashboard and stored in SQLite.
-- Each dynamic module has `name`, `system_name`, `enabled`, `timezone`, `daily_time`, recipients, SSH hosts, ordered command steps, and per-step status rules.
-- Step status is determined by: critical keyword match, then warning keyword match, then non-zero exit handling, else OK.
-- Dynamic module SSH passwords are stored encrypted using `security.encryption_key`.
-
----
-
-## 5. Chạy hệ thống
-
-### 5.1. Chạy thủ công (one-time)
-
-```bash
-python main.py --run-now
-```
-
-### 5.2. Chạy đầy đủ (scheduler + dashboard)
-
-```bash
-python main.py
-```
-
-- Scheduler chạy tự động vào 8:00 sáng, Thứ 2-6
-- Dashboard web tại http://localhost:5000
-- Dynamic modules also get their own daily scheduler jobs based on each module's configured `daily_time`
-
-### 5.3. Chạy riêng lẻ
-
-```bash
-# Chỉ dashboard
-python main.py --dashboard
-
-# Chỉ scheduler
-python main.py --scheduler
-
-# File config tùy chỉnh
-python main.py --config /path/to/config.yaml
-```
-
-### 5.4. Các tùy chọn command line
-
-| Tùy chọn | Mô tả |
-|----------|-------|
-| `--run-now` | Chạy kiểm tra ngay và thoát |
-| `--dashboard` | Chỉ chạy web dashboard |
-| `--scheduler` | Chỉ chạy scheduler |
-| `--config <file>` | Dùng file config tùy chỉnh |
-| `--log-level` | DEBUG, INFO, WARNING, ERROR |
-
----
-
-## 6. Dashboard
-
-### 6.1. Truy cập Dashboard
-
-Mở trình duyệt: http://localhost:5000
-
-### 6.2. Các chức năng
-
-| Trang | URL | Mô tả |
-|-------|-----|-------|
-| Trang chính | `/` | Danh sách các lần chạy |
-| Chi tiết | `/run/<run_id>` | Kết quả chi tiết từng bước kiểm tra |
-| Dynamic modules | `/modules` | Danh sách module do người dùng khai báo |
-| Tạo module | `/modules/new` | Tạo mới module động |
-| Sửa module | `/modules/<id>/edit` | Sửa hosts, steps, schedule, recipients |
-| Health check | `/api/status` | Trả về JSON trạng thái hệ thống |
-
-### 6.3. API Endpoints
-
-```bash
-# Health check
-curl http://localhost:5000/api/status
-
-# Kết quả trả về
-{
-  "is_running": false,
-  "latest_run": {
-    "run_id": "20260504_080000_abc123",
-    "run_type": "builtin",
-    "overall_status": "OK",
-    "started_at": "2026-05-04T08:00:00"
-  },
-  "server_time": "2026-05-04T08:05:30.123456"
-}
-```
-
-Dynamic module APIs:
-
-| Route | Method | Mô tả |
-|-------|--------|-------|
-| `/api/modules` | GET | Danh sách dynamic modules + next run + last run |
-| `/api/modules` | POST | Tạo module mới |
-| `/api/modules/<id>` | GET | Chi tiết 1 module |
-| `/api/modules/<id>` | PUT | Cập nhật module |
-| `/api/modules/<id>` | DELETE | Xóa module |
-| `/api/modules/<id>/trigger` | POST | Trigger module ngay lập tức |
-| `/api/modules/<id>/runs` | GET | Lịch sử run của module |
-
-### 6.4. Cấu hình port
+### 8.3. Cấu hình Auth
 
 ```yaml
-dashboard:
-  host: "0.0.0.0"  # Listen trên tất cả interface
-  port: 5000
-  debug: false
+auth:
+  admin_username: "admin"
+  admin_password: "admin123"        # CHANGE_ME in production
+```
+
+**Lưu ý:** Khi khởi động, nếu chưa có user nào, hệ thống tự tạo admin mặc định với username/password từ config.
+
+### 8.4. API & Route Auth
+
+- `GET /`: danh sách run → `@login_required`
+- `GET /run/<run_id>`: chi tiết run → `@login_required`
+- `GET /api/status`: healthcheck → không yêu cầu login
+- `GET /modules`: danh sách modules → `@login_required`
+- `POST /api/modules/<id>/edit`: sửa module → chỉ creator + admin
+- `GET /dashboard/users`: manage users → `@admin_required`
+- `POST /dashboard/users/create`: tạo user → `@admin_required`
+
+### 8.5. Flow đăng nhập
+
+```
+1. Truy cập dashboard → redirect /login nếu chưa session
+2. Nhập username + password
+3. Gọi verify_password(username, password)
+   - Kiểm tra user tồn tại + enabled
+   - So sánh hash(input_password + stored_salt) == stored_hash
+4. Nếu OK → login_user() → lưu session (user_id, username, role)
+5. Redirect về trang trước đó (next param)
 ```
 
 ---
 
-## 7. Xem báo cáo
+## 9. Dashboard & API
 
-### 7.1. Báo cáo HTML
+### 9.1. Truy cập
 
-Báo cáo được lưu tại: `data/reports/report_<run_id>.html`
+- Dashboard: `http://<host>:5000/` → cần login
+- Healthcheck: `GET /api/status` → public
 
-```bash
-ls -la data/reports/
-```
+### 9.2. Các trang chính
 
-### 7.2. Log files
+- `/`: danh sách run gần đây + kết quả run mới nhất
+- `/run/<run_id>`: chi tiết kết quả 1 lần chạy
+- `/report/<run_id>`: xem HTML report đã lưu
+- `/modules`: danh sách dynamic modules
+- `/modules/new`: tạo dynamic module
+- `/modules/<id>/edit`: sửa dynamic module
+- `/users`: quản lý users (admin only)
+- `/login`: đăng nhập
+- `/logout`: đăng xuất
 
-```bash
-ls -la logs/
-tail -f logs/dailycheck_20260416.log
-```
+### 9.3. API endpoints chính
 
-### 7.3. Database SQLite
+- `POST /api/trigger`: trigger built-in daily check
+- `GET /api/status`: trạng thái (running + latest run)
+- `GET /api/runs`: danh sách runs
+- `GET /api/run/<run_id>`: chi tiết results
+- `GET/POST /api/modules`: list / create dynamic module
+- `GET/PUT/DELETE /api/modules/<id>`: read/update/delete module
+- `POST /api/modules/<id>/trigger`: trigger module ngay
+- `GET /api/modules/<id>/runs`: lịch sử run của module
+- `GET /api/users`: danh sách users (admin)
+- `POST /api/users`: tạo user (admin)
+- `PUT /api/users/<id>`: sửa user (admin)
+- `DELETE /api/users/<id>`: xóa user (admin)
+ 
+ ---
+ 
+## 10. Dynamic Modules
+ 
+ - **Hosts**: ip/port/username, auth type (`password`/`key`), variables
+ - **Steps**: tên bước, command, timeout, chạy trên từng host hay chỉ host đầu tiên, rule đánh giá status
+ - **Schedule**: timezone + `daily_time` (HH:MM)
+ - **Recipients**: danh sách email nhận report của module
+ 
+### 10.1. Templates
 
-```bash
-sqlite3 data/dailycheck.db
-sqlite> .tables
-sqlite> SELECT * FROM check_results LIMIT 10;
-sqlite> SELECT run_id, run_type, module_name, overall_status FROM check_runs ORDER BY started_at DESC LIMIT 10;
-```
+`src.dynamic_modules.MODULE_TEMPLATES` cung cấp template cho:
+
+- `oracle`
+- `mongodb`
+- `hadoop`
+- `application`
+- `custom`
+
+Dashboard có API `GET /api/module-templates` và `GET /api/module-templates/<template_key>`.
+
+### 10.2. Command template variables
+ 
+ Dynamic module steps cho phép dùng `{{var}}` trong command. Context hỗ trợ:
+ 
+ - `{{host_name}}`, `{{host_ip}}`, `{{module_name}}`, `{{system_name}}`
+ - Các biến khai báo ở `host.variables` (vd `instance_name`, `service_name`...)
+ 
+ Hệ thống có validate để giảm rủi ro:
+ 
+ - Cấm `sudo`, `su`, command substitution `$(` và backticks
+ - Cấm một số ký tự nguy hiểm trong giá trị biến
+ - Nếu thiếu biến trong template sẽ trả lỗi
+ 
+ ---
+ 
+## 11. Dữ liệu, báo cáo, logs
+
+- **SQLite**: `data/dailycheck.db` (chứa check results, dynamic modules, users)
+- **HTML reports**: `data/reports/report_<run_id>.html`
+- **Logs**: `logs/` (tên file log phụ thuộc `setup_logging()`)
+
+Dashboard có thể xem report qua route `/report/<run_id>`.
 
 ---
 
-## 8. Docker
-
-### 8.1. Build và chạy với Docker Compose
+## 12. Docker
+ 
+### 12.1. Chạy với Docker Compose
 
 ```bash
-# Build image
-docker-compose build
-
-# Chạy container
-docker-compose up -d
-
-# Xem logs
+docker-compose up --build -d
 docker-compose logs -f
-
-# Stop
-docker-compose down
 ```
 
-### 8.2. Kiểm tra container
+Mặc định container chạy `python main.py` (scheduler + dashboard).
 
-```bash
-# Kiểm tra trạng thái
-docker ps
+### 12.2. Volumes/Mounts quan trọng
 
-# Health check
-curl http://localhost:5000/api/status
+- `./data:/app/data`: persist database + reports
+- `./logs:/app/logs`: persist logs
+- `${HOME}/.ssh:/root/.ssh:ro`: SSH keys để kết nối servers
+- `./config/config.yaml:/app/config/config.yaml:ro`: config runtime
 
-# Shell vào container
-docker exec -it simo_dailycheck bash
-```
+### 12.3. Healthcheck
 
-### 8.3. Lưu ý khi dùng Docker
+Docker compose healthcheck gọi:
 
-- Mount SSH keys: `${HOME}/.ssh:/root/.ssh:ro`
-- Mount config: `./config/config.yaml:/app/config/config.yaml:ro`
-- Data và logs được mount ra bên ngoài để persist
+- `http://localhost:5000/api/status`
 
 ---
 
-## 9. Xử lý sự cố
+## 14. Testing
 
-### 9.1. Lỗi SSH Connection
-
-```bash
-# Kiểm tra SSH key
-ssh -i ~/.ssh/id_rsa oracle@10.1.36.11
-
-# Kiểm tra config
-cat config/config.yaml | grep -A5 "ssh_defaults"
-```
-
-### 9.2. Lỗi Permission
+Unit tests nằm trong `tests/` (bao gồm auth, validation, dynamic modules).
 
 ```bash
-# Sửa quyền SSH key
-chmod 600 ~/.ssh/id_rsa
-
-# Sửa quyền thư mục
-chmod 700 ~/.ssh
-```
-
-### 9.3. Kiểm tra log
-
-```bash
-# Xem log gần đây
-tail -100 logs/dailycheck_$(date +%Y%m%d).log
-
-# Tìm lỗi
-grep -i error logs/dailycheck_20260416.log
-```
-
-### 9.4. Kiểm tra từng module
-
-```bash
-# Chạy toàn bộ built-in checks ngay
-python3 main.py --run-now
-
-# Chạy unit tests
 python3 -m unittest discover -s tests -v
 ```
 
-### 9.5. Kiểm tra Database
+Manual verification:
 
 ```bash
-sqlite3 data/dailycheck.db
-sqlite> SELECT run_id, run_type, module_name, overall_status, started_at FROM check_runs ORDER BY started_at DESC LIMIT 5;
-sqlite> SELECT id, name, system_name, enabled, daily_time FROM dynamic_modules;
-```
-
-### 9.6. Reset môi trường
-
-```bash
-# Stop và xóa container
-docker-compose down
-
-# Xóa data (nếu cần)
-rm -rf data/dailycheck.db data/reports/*
-
-# Rebuild
-docker-compose up --build
+python main.py --run-now
 ```
 
 ---
 
-## Cấu hình các ngưỡng kiểm tra
+## 15. Xử lý sự cố
 
-### Oracle RAC (11 bước kiểm tra)
+### 15.1. SSH không kết nối được
 
-1. **CRS Status** – Kiểm tra Cluster Ready Services
-2. **Disk Activity** – I/O stat trên các disk
-3. **ASM Disk Group** – Tình trạng ASM storage
-4. **Voting Disk** – Đảm bảo 3 voting disk ONLINE
-5. **Tablespaces** – Kiểm tra không gian
-6. **Alert Log** – Phân tích alert log Oracle
-7. **Archive Log** – Kiểm tra archive destinations
-8. **RMAN Backup** – Xem backup gần nhất
-9. **Session Count** – Số lượng session
-10. **Datafiles Status** – Trạng thái datafiles
-11. **Listener Status** – Listener đang chạy
+- Kiểm tra từ máy chạy dailycheck:
 
-### MongoDB (3 bước kiểm tra)
+```bash
+ssh -i ~/.ssh/id_rsa user@<ip>
+```
 
-1. **Replication Status** – Trạng thái replica set
-2. **Memory Usage** – Sử dụng memory
-3. **Disk Usage** – Sử dụng disk
+- Kiểm tra port/firewall
+- Nếu chạy Docker: kiểm tra volume `${HOME}/.ssh` đã mount đúng
 
-### Hadoop (3 bước kiểm tra)
+### 15.2. Dashboard không lên
 
-1. **HDFS Capacity** – Dung lượng HDFS
-2. **Block Status** – Trạng thái blocks
-3. **Node Health** – Health các data node
+- Kiểm tra port `5000` đang listen
+- Kiểm tra cấu hình `dashboard.host`, `dashboard.port`
+- Xem logs trong `logs/` hoặc `docker-compose logs -f`
 
-### Application (3 bước × N hosts)
+### 15.3. Không thể đăng nhập
 
-1. **Service Status** – Service đang chạy
-2. **Process Count** – Số process
-3. **Docker Replicas** – Số replica (nếu dùng Docker)
+- Kiểm tra user được enable: `enabled = 1` trong DB
+- Kiểm tra username (case-insensitive search)
+- Xác nhận password đúng (so sánh hash)
+- Nếu quên mật khẩu admin: cập nhật hash trực tiếp hoặc xóa user + restart để tạo admin mới
+
+### 15.4. Dynamic module chạy lỗi "Missing template variable"
+
+- Đảm bảo step có dùng `{{var}}` thì host phải có `variables[var]`.
+
+### 15.5. Không gửi được email/webhook
+
+- Kiểm tra `notifications.email.*`
+- Kiểm tra network đến SMTP
+- Kiểm tra credentials
 
 ---
 
+## 15. Xử lý sự cố
+ 
+ ## 14. Xử lý sự cố
+ 
+ ### 14.1. SSH không kết nối được
+ 
+ - Kiểm tra từ máy chạy dailycheck:
+ 
+ ```bash
+ ssh -i ~/.ssh/id_rsa user@<ip>
+ ```
+ 
+ - Kiểm tra port/firewall
+ - Nếu chạy Docker: kiểm tra volume `${HOME}/.ssh` đã mount đúng
+ 
+ ### 14.2. Dashboard không lên
+ 
+ - Kiểm tra port `5000` đang listen
+ - Kiểm tra cấu hình `dashboard.host`, `dashboard.port`
+ - Xem logs trong `logs/` hoặc `docker-compose logs -f`
+ 
+ ### 14.3. Dynamic module chạy lỗi “Missing template variable”
+ 
+ - Đảm bảo step có dùng `{{var}}` thì host phải có `variables[var]`.
+ 
+ ### 14.4. Không gửi được email/webhook
+ 
+ - Kiểm tra `notifications.email.*`
+ - Kiểm tra network đến SMTP
+ - Kiểm tra credentials
+ 
+ ---
+ 
+ ## 15. Tình trạng
+ 
+ Tình trạng: **Đã cập nhật README thành tài liệu mô tả project chi tiết** (công nghệ, cấu trúc, luồng vận hành, cài đặt, usage, Docker, dynamic modules, bảo mật, troubleshooting).
+
+-------------------------------------------------------------
 
 docker pull python:3.11-slim
 docker save python:3.11-slim -o python311.tar
 docker save simo-dailycheck:1.0 -o simo-dailycheck:1.0.tar
-
 docker load -i python311.tar
 docker run -d -p 5000:5000 simo-dailycheck:1.0
