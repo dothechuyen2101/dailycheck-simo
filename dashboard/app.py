@@ -128,11 +128,23 @@ def _module_cards():
     return cards
 
 
+def _filter_module_cards(modules, query: str):
+    keyword = (query or "").strip().lower()
+    if not keyword:
+        return modules
+    return [
+        module for module in modules
+        if keyword in module["name"].lower() or keyword in module["system_name"].lower()
+    ]
+
+
 @app.route("/modules")
 def modules_index():
+    query = request.args.get("q", "")
     return render_template(
         "modules.html",
-        modules=_module_cards(),
+        modules=_filter_module_cards(_module_cards(), query),
+        search_query=query,
         now=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
     )
 

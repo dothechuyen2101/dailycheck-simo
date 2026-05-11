@@ -385,7 +385,7 @@ class DynamicModuleStore:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT * FROM dynamic_modules
-                ORDER BY name COLLATE NOCASE
+                ORDER BY system_name COLLATE NOCASE
             """).fetchall()
         return [self.get_module(row["id"]) for row in rows]
 
