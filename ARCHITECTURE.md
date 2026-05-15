@@ -254,7 +254,6 @@ Orchestrator.run_daily_check()
 ```
 Time        Activity
 ────────────────────────────────────────────────────────
-07:55:00   Prep job (SSH connection warming - không làm gì khác)
 08:00:00   [SCHEDULED] Daily Check bắt đầu
            │
            ├─ T0+0s     Orchestrator khởi tạo, tạo run_id
