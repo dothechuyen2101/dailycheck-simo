@@ -8,6 +8,7 @@ WORKDIR /app
 # Cài dependencies hệ thống (cho paramiko)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Cài Python packages

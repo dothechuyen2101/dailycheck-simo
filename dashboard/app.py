@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, render_template, jsonify, request, abort
+from flask import Flask, render_template, jsonify, request, abort, send_file
 
 from src.config_manager import get, load_config
 from src.dynamic_modules import DynamicModuleStore, get_module_templates, build_module_from_template
@@ -35,6 +35,14 @@ STATUS_COLOR = {
     "CRITICAL": "danger",
     "ERROR": "secondary",
 }
+
+
+def _get_report_path(run_id: str) -> Path:
+    reports_dir = (Path(get("general.data_dir", "data")) / "reports").resolve()
+    report_path = (reports_dir / f"report_{run_id}.html").resolve()
+    if report_path.parent != reports_dir:
+        abort(404)
+    return report_path
 
 
 @app.route("/")
@@ -292,11 +300,35 @@ def api_run_detail(run_id: str):
 @app.route("/report/<run_id>")
 def view_report(run_id: str):
     """Xem báo cáo HTML đã lưu."""
-    reports_dir = Path(get("general.data_dir", "data")) / "reports"
-    report_path = reports_dir / f"report_{run_id}.html"
+    report_path = _get_report_path(run_id)
     if report_path.exists():
         return report_path.read_text(encoding="utf-8")
     return "Báo cáo không tìm thấy", 404
+
+
+@app.route("/report/<run_id>/download")
+def download_report(run_id: str):
+    """Tải báo cáo PDF."""
+    run_info = store.get_run(run_id)
+    if not run_info:
+        abort(404)
+    results = store.get_run_results(run_id)
+    try:
+        from src.pdf_report_generator import generate_pdf_report
+
+        pdf_buffer = generate_pdf_report(run_info, results)
+    except ImportError:
+        logger.exception("Không thể tạo PDF report do thiếu dependency")
+        return "Không thể tạo PDF. Vui lòng cài đặt dependency: reportlab", 500
+    except Exception:
+        logger.exception("Không thể tạo PDF report")
+        return "Không thể tạo PDF report", 500
+    return send_file(
+        pdf_buffer,
+        as_attachment=True,
+        download_name=f"simo_report_{run_id}.pdf",
+        mimetype="application/pdf",
+    )
 
 
 def create_app():

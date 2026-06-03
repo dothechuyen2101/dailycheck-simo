@@ -19,7 +19,10 @@
       </div>
       <div class="col-md-2"><small class="text-muted">Loại run</small><br>{{ run_info.run_type }}</div>
       <div class="col-md-2 text-end">
-        <a href="/report/{{ run_info.run_id }}" class="btn btn-outline-primary btn-sm" target="_blank">📄 Xem báo cáo HTML</a>
+        <div class="d-grid gap-1">
+          <a href="/report/{{ run_info.run_id }}" class="btn btn-outline-primary btn-sm" target="_blank">📄 Xem báo cáo</a>
+          <a href="/report/{{ run_info.run_id }}/download" class="btn btn-outline-success btn-sm">⬇ Tải PDF</a>
+        </div>
       </div>
     </div>
     {% if run_info.module_name %}

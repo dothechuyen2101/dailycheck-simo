@@ -75,7 +75,10 @@
             <small class="ms-2 text-muted">{{ latest.module_name }}</small>
             {% endif %}
           </div>
-          <a href="/run/{{ latest.run_id }}" class="btn btn-outline-secondary btn-sm">Chi tiết</a>
+          <div class="d-flex gap-2">
+            <a href="/run/{{ latest.run_id }}" class="btn btn-outline-secondary btn-sm">Chi tiết</a>
+            <a href="/report/{{ latest.run_id }}/download" class="btn btn-outline-success btn-sm">Tải PDF</a>
+          </div>
         </div>
         <div class="row mt-3 text-center">
           <div class="col"><div class="fw-bold fs-4">{{ latest.total_checks }}</div><small class="text-muted">Tổng</small></div>
@@ -139,7 +142,12 @@
           <td class="text-warning">{{ r.warning_count }}</td>
           <td class="text-danger">{{ r.critical_count }}</td>
           <td class="text-secondary">{{ r.error_count }}</td>
-          <td><a href="/run/{{ r.run_id }}" class="btn btn-xs btn-outline-secondary btn-sm py-0">Xem</a></td>
+          <td>
+            <div class="d-flex gap-1 justify-content-end">
+              <a href="/run/{{ r.run_id }}" class="btn btn-xs btn-outline-secondary btn-sm py-0">Xem</a>
+              <a href="/report/{{ r.run_id }}/download" class="btn btn-xs btn-outline-success btn-sm py-0">PDF</a>
+            </div>
+          </td>
         </tr>
         {% endfor %}
       </tbody>

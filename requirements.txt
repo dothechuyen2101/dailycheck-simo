@@ -9,6 +9,7 @@ APScheduler>=3.10.4
 
 # Web Dashboard
 Flask>=3.0.0
+reportlab>=4.2.0
 
 # Config Management
 PyYAML>=6.0.1
