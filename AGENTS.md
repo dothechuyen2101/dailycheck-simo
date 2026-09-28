@@ -36,18 +36,20 @@ python main.py --config path.yaml   # custom config file
 - Uses secret key from `dashboard.secret_key`
 - Dynamic module UI: `/modules`, `/modules/new`, `/modules/<id>/edit`
 - Dynamic module API: `/api/modules`, `/api/modules/<id>`, `/api/modules/<id>/trigger`, `/api/modules/<id>/runs`
+- Built-in command editor: `/commands`; API `GET /api/builtin-commands`, `PUT|DELETE /api/builtin-commands/<step_key>`
 
 ## Check Modules
 - `src/checks/oracle_checks.py` – 11 steps via SSH/sqlplus + optional cx_Oracle
 - `src/checks/mongo_checks.py` – 3 steps via SSH
 - `src/checks/hadoop_checks.py` – 3 steps via SSH + `hdfs dfsadmin`
 - `src/checks/app_checks.py` – 3 steps × N hosts, supports Docker replicas
+- Commands are not hardcoded in the check modules: defaults live in `src/builtin_commands.py` (`BUILTIN_STEPS`), dashboard overrides in SQLite; parsing stays in the check modules
 
 ## Data & Storage
 - SQLite DB: `data/dailycheck.db`
 - HTML reports saved: `data/reports/report_<run_id>.html`
 - Logs: `logs/` directory
-- Additional SQLite tables: `dynamic_modules`, `dynamic_module_hosts`, `dynamic_module_steps`
+- Additional SQLite tables: `dynamic_modules`, `dynamic_module_hosts`, `dynamic_module_steps`, `builtin_step_overrides`
 - `check_runs` now includes `run_type`, `module_id`, and `module_name`
 
 ## Security

@@ -645,9 +645,6 @@ def _validate_and_sanitize_context(context: dict) -> dict:
 
 def _render_command(command: str, module: DynamicModule, host: DynamicModuleHost) -> str:
     """Render command template with validated and sanitized variables."""
-    # Validate the command template first
-    _validate_command_template(command)
-    
     # Build context with built-in variables
     context = {
         "host_name": host.name,
@@ -655,10 +652,18 @@ def _render_command(command: str, module: DynamicModule, host: DynamicModuleHost
         "module_name": module.name,
         "system_name": module.system_name,
     }
-    
+
     # Add host variables (convert all to strings)
     context.update({str(key): str(value) for key, value in host.variables.items()})
-    
+
+    return render_command_template(command, context)
+
+
+def render_command_template(command: str, context: dict) -> str:
+    """Render a {{var}} command template; validates the template, the values and the result."""
+    # Validate the command template first
+    _validate_command_template(command)
+
     # Validate and sanitize all context values
     sanitized_context = _validate_and_sanitize_context(context)
     

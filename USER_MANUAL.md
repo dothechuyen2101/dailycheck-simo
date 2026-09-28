@@ -305,6 +305,7 @@ oracle:
     - name: "DB1"            # Tên nút
       ip: "192.168.1.10"     # Địa chỉ IP
       instance: "simo1"      # Tên instance
+      asm_instance: "+ASM1"  # (Tuỳ chọn) SID của ASM cho Bước 10, mặc định +ASM1
       ssh:
         username: "oracle"
         password: "CHANGE_ME"
@@ -682,7 +683,24 @@ Cho mỗi bước:
 - **Error Keywords:** Từ khóa cho biết thất bại
 - **Warning Keywords:** Từ khóa cho biết cảnh báo
 
-#### 6. Điểm cuối API
+#### 6. Lệnh check built-in
+
+**URL:** `/commands` (menu **Lệnh Built-in**)
+
+Trang này cho phép sửa lệnh mà Daily Check built-in chạy trên Oracle, MongoDB, Hadoop và Application, không cần sửa code:
+
+- Mỗi hệ thống là một tab; mỗi bước là một thẻ gồm lệnh, SQL script (với các bước Oracle dùng sqlplus), timeout và công tắc **Bật**.
+- Nhấn **Lưu** để lưu bước đó. Lệnh không hợp lệ (có `$(`, backtick, `sudo`, xuống dòng, biến không hỗ trợ...) sẽ báo lỗi ngay trên thẻ.
+- Bước đã sửa có nhãn **Đã sửa**; nhấn **Khôi phục mặc định** để quay về lệnh gốc. Mục "Xem lệnh mặc định" hiển thị lệnh gốc để so sánh.
+- Tắt công tắc **Bật** rồi **Lưu** để bỏ qua bước đó trong các lần chạy sau.
+- Thay đổi áp dụng từ lần chạy tiếp theo, không cần khởi động lại dịch vụ.
+
+**Lưu ý khi sửa lệnh:**
+- Hệ thống vẫn đánh giá output bằng logic có sẵn (ngưỡng trong `thresholds.*`). Dòng "Định dạng output" trên mỗi thẻ mô tả output mà bước đó cần; lệnh mới phải giữ đúng định dạng này.
+- Biến dùng được hiển thị dưới mỗi lệnh, ví dụ `{{instance}}`, `{{asm_instance}}`, `{{service_name}}`. Giá trị lấy từ `config.yaml`.
+- SQL script được gửi vào stdin của lệnh sqlplus nên có thể viết nhiều dòng và dùng dấu nháy, `$` bình thường.
+
+#### 7. Điểm cuối API
 
 **Kiểm tra sức khỏe:**
 ```
@@ -718,6 +736,13 @@ Trả về: Kết quả thực thi
 ```
 GET /api/modules/<id>/runs
 Trả về: Danh sách các lần chạy gần đây với kết quả
+```
+
+**Lệnh check built-in:**
+```
+GET    /api/builtin-commands              Danh sách bước built-in (lệnh hiện tại, mặc định, is_modified)
+PUT    /api/builtin-commands/<step_key>   Lưu chỉnh sửa, body: {"enabled": true, "commands": {"main": {"command": "...", "script": "...", "timeout_sec": 60}}}
+DELETE /api/builtin-commands/<step_key>   Khôi phục mặc định
 ```
 
 ---

@@ -11,6 +11,7 @@ from typing import List
 from src.config_manager import get
 from src.logger import CheckResult, RunSummary, ResultStore
 from src.alert_manager import AlertManager
+from src.builtin_commands import BuiltinCommandStore
 from src.dynamic_modules import DynamicModuleStore, run_module_checks
 from src.report_generator import generate_html_report, generate_subject
 import src.checks.oracle_checks as oracle_checks
@@ -87,6 +88,8 @@ def run_daily_check() -> RunSummary:
     store.save_run(summary)
 
     all_results: List[CheckResult] = []
+    # Snapshot lệnh (mặc định + chỉnh sửa trên dashboard) dùng cho toàn bộ lần chạy
+    commands = BuiltinCommandStore().load_command_set()
     modules = [
         ("Oracle", oracle_checks.run_all),
         ("MongoDB", mongo_checks.run_all),
@@ -95,7 +98,7 @@ def run_daily_check() -> RunSummary:
     ]
 
     with ThreadPoolExecutor(max_workers=min(max_workers, len(modules))) as executor:
-        futures = {executor.submit(fn): name for name, fn in modules}
+        futures = {executor.submit(fn, commands): name for name, fn in modules}
         for future in as_completed(futures):
             module_name = futures[future]
             try:

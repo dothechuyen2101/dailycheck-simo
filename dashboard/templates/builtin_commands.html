@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block title %}Lệnh Built-in – SIMO Daily Check{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h5 class="fw-bold mb-0">Lệnh check built-in</h5>
+    <small class="text-muted">Chỉnh sửa lệnh shell/SQL mà Daily Check built-in chạy trên từng hệ thống. Thay đổi áp dụng từ lần chạy tiếp theo, không cần khởi động lại.</small>
+  </div>
+  <a href="/" class="btn btn-outline-secondary btn-sm">← Dashboard</a>
+</div>
+
+<div class="alert alert-info small">
+  Logic đánh giá kết quả (ngưỡng, từ khoá) vẫn nằm trong code và trong <code>thresholds.*</code> của config.yaml.
+  Khi sửa lệnh, hãy giữ output đúng định dạng mô tả ở mỗi bước. Lệnh chỉ được viết trên một dòng;
+  SQL viết trong ô "SQL script" và được gửi vào stdin của lệnh. Không cho phép <code>$(</code>, backtick,
+  <code>sudo</code>/<code>su</code>, <code>rm -rf /</code>.
+</div>
+
+<ul class="nav nav-tabs" id="systemTabs" role="tablist">
+  {% for key, label in system_labels.items() %}
+  <li class="nav-item" role="presentation">
+    <button class="nav-link {% if loop.first %}active{% endif %}" data-bs-toggle="tab"
+            data-bs-target="#pane-{{ key }}" type="button" role="tab">
+      {{ label }} <span class="badge bg-info ms-1 d-none" id="count-{{ key }}"></span>
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+<div class="tab-content pt-3" id="stepsContainer">
+  {% for key, label in system_labels.items() %}
+  <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="pane-{{ key }}" role="tabpanel"
+       data-system="{{ key }}"></div>
+  {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STEPS = {{ steps|tojson }};
+</script>
+{% raw %}
+<script>
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
+
+function varTag(name) {
+  return `<code>{{${escapeHtml(name)}}}</code>`;
+}
+
+function commandBlock(cmd) {
+  const def = cmd.default;
+  const scriptRows = Math.min(20, (cmd.script || "").split("\n").length + 1);
+  const defaultText = [
+    def.command || "(trống)",
+    def.script ? `\n-- SQL script --\n${def.script}` : "",
+    `\n-- Timeout: ${def.timeout_sec} giây`,
+  ].join("");
+  return `
+    <div class="cmd-item mb-3" data-cmd-key="${escapeHtml(cmd.key)}">
+      <div class="d-flex align-items-center gap-2 mb-1">
+        <label class="form-label fw-semibold small mb-0">${escapeHtml(cmd.label)}</label>
+        ${cmd.is_modified ? '<span class="badge bg-info">Đã sửa</span>' : ""}
+      </div>
+      <div class="row g-2">
+        <div class="col-md-10">
+          <input class="form-control form-control-sm font-monospace cmd-command"
+                 value="${escapeHtml(cmd.command)}" ${cmd.optional ? 'placeholder="(để trống = bỏ qua)"' : ""}>
+        </div>
+        <div class="col-md-2">
+          <div class="input-group input-group-sm">
+            <input type="number" min="1" max="3600" class="form-control cmd-timeout"
+                   value="${escapeHtml(cmd.timeout_sec)}" title="Timeout">
+            <span class="input-group-text">giây</span>
+          </div>
+        </div>
+      </div>
+      ${cmd.has_script ? `
+        <label class="form-label small mt-2 mb-1">SQL script (gửi qua stdin)</label>
+        <textarea class="form-control form-control-sm font-monospace cmd-script"
+                  rows="${scriptRows}">${escapeHtml(cmd.script)}</textarea>` : ""}
+      <div class="small text-muted mt-1">Biến dùng được: ${cmd.variables.map(varTag).join(" ")}</div>
+      <details class="small mt-1">
+        <summary class="text-muted">Xem lệnh mặc định</summary>
+        <pre class="mb-0 mt-1">${escapeHtml(defaultText)}</pre>
+      </details>
+    </div>`;
+}
+
+function stepCard(step) {
+  const modifiedBadge = step.is_modified ? '<span class="badge bg-info">Đã sửa</span>' : "";
+  const disabledBadge = step.enabled ? "" : '<span class="badge bg-secondary">Đã tắt</span>';
+  return `
+    <div class="card mb-3 step-card ${step.enabled ? "" : "opacity-75"}" data-step-key="${escapeHtml(step.key)}">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <strong>${escapeHtml(step.name)}</strong>
+          <code class="small text-muted">${escapeHtml(step.key)}</code>
+          ${modifiedBadge} ${disabledBadge}
+        </div>
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input step-enabled" type="checkbox" id="en-${escapeHtml(step.key)}"
+                 ${step.enabled ? "checked" : ""}>
+          <label class="form-check-label small" for="en-${escapeHtml(step.key)}">Bật</label>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="alert alert-danger small py-2 d-none step-error"></div>
+        <div class="alert alert-success small py-2 d-none step-success"></div>
+        <p class="small text-muted mb-3"><strong>Định dạng output:</strong> ${escapeHtml(step.output_hint)}</p>
+        ${step.commands.map(commandBlock).join("")}
+        <div class="d-flex align-items-center gap-2">
+          <button class="btn btn-primary btn-sm" type="button" data-action="save">Lưu</button>
+          <button class="btn btn-outline-secondary btn-sm" type="button" data-action="reset"
+                  ${step.is_modified ? "" : "disabled"}>Khôi phục mặc định</button>
+          ${step.updated_at ? `<small class="text-muted ms-auto">Cập nhật lần cuối: ${escapeHtml(step.updated_at.replace("T", " "))}</small>` : ""}
+        </div>
+      </div>
+    </div>`;
+}
+
+function updateTabCounts() {
+  const counts = {};
+  STEPS.forEach(step => {
+    if (step.is_modified) counts[step.system] = (counts[step.system] || 0) + 1;
+  });
+  document.querySelectorAll(".tab-pane[data-system]").forEach(pane => {
+    const badge = document.getElementById(`count-${pane.dataset.system}`);
+    const n = counts[pane.dataset.system] || 0;
+    badge.textContent = `${n} đã sửa`;
+    badge.classList.toggle("d-none", n === 0);
+  });
+}
+
+function renderAll() {
+  document.querySelectorAll(".tab-pane[data-system]").forEach(pane => {
+    pane.innerHTML = STEPS.filter(s => s.system === pane.dataset.system).map(stepCard).join("");
+  });
+  updateTabCounts();
+}
+
+function replaceStep(step, message) {
+  const idx = STEPS.findIndex(s => s.key === step.key);
+  STEPS[idx] = step;
+  const oldCard = document.querySelector(`.step-card[data-step-key="${CSS.escape(step.key)}"]`);
+  oldCard.outerHTML = stepCard(step);
+  const card = document.querySelector(`.step-card[data-step-key="${CSS.escape(step.key)}"]`);
+  const success = card.querySelector(".step-success");
+  success.textContent = message;
+  success.classList.remove("d-none");
+  updateTabCounts();
+}
+
+function showError(card, message) {
+  card.querySelector(".step-success").classList.add("d-none");
+  const box = card.querySelector(".step-error");
+  box.textContent = message;
+  box.classList.remove("d-none");
+}
+
+async function request(url, options) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function collectPayload(card) {
+  const payload = {enabled: card.querySelector(".step-enabled").checked, commands: {}};
+  card.querySelectorAll(".cmd-item").forEach(item => {
+    const cmd = {
+      command: item.querySelector(".cmd-command").value,
+      timeout_sec: item.querySelector(".cmd-timeout").value,
+    };
+    const script = item.querySelector(".cmd-script");
+    if (script) cmd.script = script.value;
+    payload.commands[item.dataset.cmdKey] = cmd;
+  });
+  return payload;
+}
+
+async function saveStep(card) {
+  const key = card.dataset.stepKey;
+  try {
+    const step = await request(`/api/builtin-commands/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(collectPayload(card)),
+    });
+    replaceStep(step, "Đã lưu. Áp dụng từ lần chạy tiếp theo.");
+  } catch (err) {
+    showError(card, err.message);
+  }
+}
+
+async function resetStep(card) {
+  if (!confirm("Khôi phục lệnh mặc định cho bước này?")) return;
+  const key = card.dataset.stepKey;
+  try {
+    const step = await request(`/api/builtin-commands/${encodeURIComponent(key)}`, {method: "DELETE"});
+    replaceStep(step, "Đã khôi phục lệnh mặc định.");
+  } catch (err) {
+    showError(card, err.message);
+  }
+}
+
+document.getElementById("stepsContainer").addEventListener("click", event => {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const card = button.closest(".step-card");
+  if (button.dataset.action === "save") saveStep(card);
+  if (button.dataset.action === "reset") resetStep(card);
+});
+
+renderAll();
+</script>
+{% endraw %}
+{% endblock %}

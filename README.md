@@ -153,6 +153,7 @@ oracle:
     - name: "DB1"
       ip: "10.1.36.11"
       instance: "simo1"
+      asm_instance: "+ASM1"   # (tuỳ chọn) SID của ASM cho Bước 10, mặc định +ASM1
       ssh:
         username: "oracle"
         key_path: "~/.ssh/id_rsa"
@@ -218,11 +219,25 @@ notifications:
 
 ### 4.4. Dynamic Modules
 
-- Built-in Oracle, MongoDB, Hadoop, and Application checks remain file-configured.
+- Built-in Oracle, MongoDB, Hadoop, and Application checks keep hosts and thresholds in `config.yaml`; their commands are editable on the dashboard (see §4.5).
 - New user-defined modules are managed from the dashboard and stored in SQLite.
 - Each dynamic module has `name`, `system_name`, `enabled`, `timezone`, `daily_time`, recipients, SSH hosts, ordered command steps, and per-step status rules.
 - Step status is determined by: critical keyword match, then warning keyword match, then non-zero exit handling, else OK.
 - Dynamic module SSH passwords are stored encrypted using `security.encryption_key`.
+
+### 4.5. Lệnh check built-in
+
+Lệnh shell/SQL của các check built-in (Oracle 11 bước, MongoDB, Hadoop, Application) được chỉnh sửa tại trang `/commands` trên dashboard (menu **Lệnh Built-in**):
+
+- Mỗi bước cho phép sửa lệnh, SQL script (các bước Oracle dùng sqlplus), timeout và bật/tắt bước.
+- Thay đổi lưu vào bảng `builtin_step_overrides` trong SQLite và áp dụng từ lần chạy tiếp theo, không cần restart. Nút **Khôi phục mặc định** xoá phần đã sửa.
+- Lệnh mặc định nằm trong `src/builtin_commands.py`. Logic đánh giá output (ngưỡng, từ khoá) vẫn nằm trong `src/checks/*_checks.py` và `thresholds.*`, nên lệnh sửa phải giữ output đúng định dạng mô tả ở từng bước.
+- Lệnh viết trên một dòng, dùng biến dạng `{{var}}`: `{{host_name}}`, `{{host_ip}}`, Oracle thêm `{{instance}}`, `{{asm_instance}}` (Bước 11 có `{{alert_dir}}`), MongoDB/Application thêm `{{service_name}}`, Application thêm `{{app_name}}`.
+- SQL script được gửi vào stdin của lệnh (không qua `echo`), nên `v$asm_diskgroup`, dấu nháy trong SQL giữ nguyên.
+- Áp dụng cùng quy tắc chặn như dynamic module: không cho `$(`, backtick, `sudo`/`su`, `rm -rf /`, redirect vào `/dev/*`.
+
+Ví dụ: nếu user SSH chưa có `ORACLE_HOME` của grid, sửa lệnh Bước 10 thành
+`export ORACLE_HOME=/u01/app/19.3.0/grid; export ORACLE_SID={{asm_instance}}; $ORACLE_HOME/bin/sqlplus -S / as sysasm`.
 
 ---
 
@@ -284,6 +299,7 @@ Mở trình duyệt: http://localhost:5000
 | Dynamic modules | `/modules` | Danh sách module do người dùng khai báo |
 | Tạo module | `/modules/new` | Tạo mới module động |
 | Sửa module | `/modules/<id>/edit` | Sửa hosts, steps, schedule, recipients |
+| Lệnh built-in | `/commands` | Sửa lệnh/SQL/timeout, bật/tắt từng bước check built-in |
 | Health check | `/api/status` | Trả về JSON trạng thái hệ thống |
 
 ### 6.3. API Endpoints
@@ -316,6 +332,14 @@ Dynamic module APIs:
 | `/api/modules/<id>` | DELETE | Xóa module |
 | `/api/modules/<id>/trigger` | POST | Trigger module ngay lập tức |
 | `/api/modules/<id>/runs` | GET | Lịch sử run của module |
+
+Built-in command APIs:
+
+| Route | Method | Mô tả |
+|-------|--------|-------|
+| `/api/builtin-commands` | GET | Danh sách bước built-in (lệnh hiện tại, mặc định, `is_modified`) |
+| `/api/builtin-commands/<step_key>` | PUT | Lưu chỉnh sửa, thay thế toàn bộ phần đã sửa của bước (lệnh không gửi lên sẽ về mặc định): `{"enabled": true, "commands": {"main": {"command": "...", "script": "...", "timeout_sec": 60}}}` |
+| `/api/builtin-commands/<step_key>` | DELETE | Khôi phục mặc định |
 
 ### 6.4. Cấu hình port
 

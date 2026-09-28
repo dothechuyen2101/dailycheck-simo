@@ -40,9 +40,18 @@ The root-level `verify_validation.py` and `test_edge_cases.py` are ad-hoc script
 
 **Built-in check modules** (`src/checks/*_checks.py`) all follow the same pattern:
 - A module-level `SYSTEM` name and `_ok/_warn/_crit/_err` helpers that build `CheckResult`.
-- One `check_*` function per numbered step (step names like `"Bước 2 – Phân vùng đĩa"`).
-- A `run_all()` that iterates the hosts in the config section, opens an SSH connection with `ssh_manager.ssh_connect(host_cfg)`, and runs the steps.
-- Every check parses shell output (`df`, `crs_stat`, `systemctl`, `docker ps`, etc.). Oracle SQL checks pipe SQL into `sqlplus -S / as sysdba` over SSH; `cx_Oracle`/`oracledb` isn't used. Thresholds come from the `thresholds.*` config keys, with hardcoded defaults.
+- One `check_*(client, host_name, commands, ctx)` function per numbered step. `app_checks` also takes `system` first.
+- A step list of `(step_key, fn)` pairs, and a `run_all(commands=None)` that iterates the hosts in the config section, skips disabled steps, opens an SSH connection with `ssh_manager.ssh_connect(host_cfg)`, and runs the steps.
+- Every check parses shell output (`df`, `crs_stat`, `systemctl`, `docker ps`, etc.). `src/checks/common.py` holds the shared date/hostname, disk and systemctl checks. Thresholds come from the `thresholds.*` config keys, with hardcoded defaults.
+- Oracle SQL checks run `sqlplus -S / as sysdba` over SSH with the SQL sent on stdin (`SSHClient.run(..., input=...)`); `cx_Oracle`/`oracledb` isn't used. ORA-/SP2- output or a non-zero exit gives ERROR.
+
+**Built-in commands** (`src/builtin_commands.py`):
+- The checks never hardcode commands. They call `commands.run(client, step_key, cmd_key, ctx)` on a `BuiltinCommandSet`.
+- `BUILTIN_STEPS` holds the defaults: each step has a key (`oracle.disk_space`), its display name, one or more commands (command template, optional stdin script, timeout) and an `output_hint`.
+- The dashboard page `/commands` stores overrides (command/script/timeout/enabled) in the SQLite table `builtin_step_overrides`. Only values that differ from the default are stored.
+- `run_daily_check()` loads one snapshot with `BuiltinCommandStore().load_command_set()` and passes it to every module's `run_all()`.
+- Commands are rendered with `dynamic_modules.render_command_template()`, so they get the same validation as dynamic modules. Only the variables used in the template are sanitized. Allowed variables are listed per system in `SYSTEM_VARIABLES`, plus per-command `extra_vars`.
+- Adding a new built-in step means adding a `BuiltinStepDef` and wiring its `check_*` function into the module's step list.
 
 **Persistence** (`src/logger.py`, which also holds `CheckResult`, `RunSummary`, `ResultStore` and `setup_logging`):
 - SQLite at `data/dailycheck.db`, with tables `check_runs`, `check_results` and `alert_history`.

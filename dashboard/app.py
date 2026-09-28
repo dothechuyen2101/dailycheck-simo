@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask import Flask, render_template, jsonify, request, abort, send_file
 
+from src.builtin_commands import BuiltinCommandStore, SYSTEM_LABELS
 from src.config_manager import get, load_config
 from src.dynamic_modules import DynamicModuleStore, get_module_templates, build_module_from_template
 from src.logger import ResultStore
@@ -28,6 +29,7 @@ app.secret_key = get("dashboard.secret_key", "dev-secret-key")
 logger = logging.getLogger("dailycheck.dashboard")
 store = ResultStore()
 module_store = DynamicModuleStore()
+builtin_store = BuiltinCommandStore()
 
 STATUS_COLOR = {
     "OK": "success",
@@ -185,6 +187,40 @@ def modules_edit(module_id: int):
         now=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         default_timezone=get("general.timezone", "Asia/Ho_Chi_Minh"),
     )
+
+
+@app.route("/commands")
+def builtin_commands_page():
+    return render_template(
+        "builtin_commands.html",
+        steps=builtin_store.list_steps(),
+        system_labels=SYSTEM_LABELS,
+        now=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+    )
+
+
+@app.route("/api/builtin-commands", methods=["GET"])
+def api_builtin_commands():
+    return jsonify(builtin_store.list_steps())
+
+
+@app.route("/api/builtin-commands/<step_key>", methods=["PUT"])
+def api_builtin_command_update(step_key: str):
+    payload = request.get_json(force=True, silent=True)
+    try:
+        return jsonify(builtin_store.save_override(step_key, payload))
+    except KeyError:
+        abort(404)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/builtin-commands/<step_key>", methods=["DELETE"])
+def api_builtin_command_reset(step_key: str):
+    try:
+        return jsonify(builtin_store.reset(step_key))
+    except KeyError:
+        abort(404)
 
 
 @app.route("/api/trigger", methods=["POST"])

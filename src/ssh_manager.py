@@ -35,6 +35,7 @@ class CommandResult:
     stderr: str
     exit_code: int
     success: bool
+    command: str = ""
 
 
 class SSHClient:
@@ -81,21 +82,26 @@ class SSHClient:
                     time.sleep(2)
         return False
 
-    def run(self, command: str, timeout: int | None = None) -> CommandResult:
-        """Thực thi lệnh shell. Trả về CommandResult."""
+    def run(self, command: str, timeout: int | None = None, input: str | None = None) -> CommandResult:
+        """Thực thi lệnh shell. `input` (nếu có) được ghi vào stdin của lệnh, vd. SQL cho sqlplus."""
         if timeout is None:
             timeout = get("general.command_timeout", 60)
         if self._client is None:
-            return CommandResult("", "Not connected", -1, False)
+            return CommandResult("", "Not connected", -1, False, command)
         try:
-            _, stdout, stderr = self._client.exec_command(command, timeout=timeout)
-            exit_code = stdout.channel.recv_exit_status()
+            stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+            if input is not None:
+                stdin.write(input)
+                stdin.flush()
+            stdin.channel.shutdown_write()
+            # Đọc output trước rồi mới lấy exit status để tránh treo khi output lớn
             out = stdout.read().decode("utf-8", errors="replace").strip()
             err = stderr.read().decode("utf-8", errors="replace").strip()
-            return CommandResult(out, err, exit_code, exit_code == 0)
+            exit_code = stdout.channel.recv_exit_status()
+            return CommandResult(out, err, exit_code, exit_code == 0, command)
         except Exception as e:
             logger.error(f"Command failed on {self.config.host}: {command!r} → {e}")
-            return CommandResult("", str(e), -1, False)
+            return CommandResult("", str(e), -1, False, command)
 
     def run_sudo(self, command: str, timeout: int | None = None) -> CommandResult:
         """Thực thi lệnh với sudo (yêu cầu NOPASSWD sudoers)."""
