@@ -44,6 +44,9 @@ python main.py --config path.yaml   # custom config file
 - `src/checks/hadoop_checks.py` – 3 steps via SSH + `hdfs dfsadmin`
 - `src/checks/app_checks.py` – 3 steps × N hosts, supports Docker replicas
 - Commands are not hardcoded in the check modules: defaults live in `src/builtin_commands.py` (`BUILTIN_STEPS`), dashboard overrides in SQLite; parsing stays in the check modules
+- Oracle hosts are AIX, SSH as root: sqlplus runs via `su - {{oracle_user}} -c` with explicit ORACLE_HOME, grid tools via `{{grid_home}}/bin`, CRS via `crsctl stat res -t` (no `crs_stat` in 19c); grid/oracle home and user come from config or are auto-detected (`ps`, `/etc/oratab`)
+- Timestamps: use `src.timeutil.now()` (follows `general.timezone`), not `datetime.now()`
+- Applications support `service_type: systemd|docker|process` (systemctl, Docker Swarm service, or process command-line match), overridable per host; `process_pattern` resolves `active (exited)` units
 
 ## Data & Storage
 - SQLite DB: `data/dailycheck.db`

@@ -149,13 +149,19 @@ ssh_defaults:
 # Oracle RAC
 oracle:
   db_name: "Simo_master"
+  # (tuỳ chọn) Mặc định tự dò trên node DB (tiến trình ocssd.bin, /etc/oratab, ora_pmon_<instance>);
+  # khai báo nếu dò sai. Có thể khai báo riêng trong từng host.
+  grid_home: "/u01/app/19.0.0/grid"
+  oracle_home: "/u01/app/oracle/product/19.0.0/dbhome_1"
+  oracle_user: "oracle"
+  db_unique_name: "simo"              # (tuỳ chọn) dùng cho đường dẫn alert log dự phòng; mặc định = tên instance bỏ số cuối
   hosts:
     - name: "DB1"
       ip: "10.1.36.11"
       instance: "simo1"
-      asm_instance: "+ASM1"   # (tuỳ chọn) SID của ASM cho Bước 10, mặc định +ASM1
+      asm_instance: "+ASM1"   # (tuỳ chọn) biến {{asm_instance}} khi muốn truy vấn trên instance ASM
       ssh:
-        username: "oracle"
+        username: "root"      # lệnh sqlplus mặc định chạy qua su - oracle
         key_path: "~/.ssh/id_rsa"
 
 # MongoDB
@@ -176,6 +182,26 @@ hadoop:
       ssh:
         username: "hdfs"
         key_path: "~/.ssh/id_rsa"
+
+# Ứng dụng
+applications:
+  - name: "Application Server"
+    service: "ngs-simo_simo-restapi"
+    service_type: "docker"    # systemd (mặc định): systemctl status; docker: Docker Swarm service;
+                              # process: tìm tiến trình có dòng lệnh chứa giá trị service (ứng dụng không chạy bằng systemd)
+    has_docker: true          # thêm Bước 3b – kiểm tra toàn bộ container
+    hosts:
+      - name: "SIMO-BE-1"
+        ip: "10.1.46.41"
+      - name: "SIMO-FE-1"
+        ip: "10.1.46.42"
+        service: ""           # service/service_type ở host ghi đè giá trị của ứng dụng; "" = bỏ Bước 3 trên host này
+  - name: "WSO2 EI Cluster"
+    service: "wso2"
+    service_type: "process"
+  - name: "WSO2 APIM Cluster"
+    service: "wso2am-3.2.0.service"
+    process_pattern: "org.wso2.carbon.bootstrap.Bootstrap"  # (tuỳ chọn) tiến trình cần tìm khi unit ở trạng thái active (exited)
 ```
 
 ### 4.2. Ngưỡng cảnh báo (Thresholds)
@@ -189,7 +215,13 @@ thresholds:
     system_min_free_pct: 3   # SYSTEM/SYSAUX >= 3% free
     undotbs_min_total_mb: 400 # UNDOTBS >= 400MB total
     default_min_free_pct: 15 # Tablespace khác >= 15% free
+  disk_exclude_mounts:       # (tuỳ chọn) mount không kiểm tra (kể cả mount con)
+    - "/mailbox"
+  alert_log_ignore_keywords: # (tuỳ chọn) bỏ qua dòng alert log chứa các chuỗi này
+    - "TNS-12535"
 ```
+
+Bước 2 luôn bỏ qua `/cdrom`, `/cdroom` và các mount nội bộ của Docker (`/var/lib/docker/overlay2`, `/var/lib/docker/containers`, `/run/docker`), vì chúng chỉ lặp lại dung lượng của phân vùng chứa Docker.
 
 ### 4.3. Thông báo Email/Webhook
 
@@ -232,12 +264,22 @@ Lệnh shell/SQL của các check built-in (Oracle 11 bước, MongoDB, Hadoop, 
 - Mỗi bước cho phép sửa lệnh, SQL script (các bước Oracle dùng sqlplus), timeout và bật/tắt bước.
 - Thay đổi lưu vào bảng `builtin_step_overrides` trong SQLite và áp dụng từ lần chạy tiếp theo, không cần restart. Nút **Khôi phục mặc định** xoá phần đã sửa.
 - Lệnh mặc định nằm trong `src/builtin_commands.py`. Logic đánh giá output (ngưỡng, từ khoá) vẫn nằm trong `src/checks/*_checks.py` và `thresholds.*`, nên lệnh sửa phải giữ output đúng định dạng mô tả ở từng bước.
-- Lệnh viết trên một dòng, dùng biến dạng `{{var}}`: `{{host_name}}`, `{{host_ip}}`, Oracle thêm `{{instance}}`, `{{asm_instance}}` (Bước 11 có `{{alert_dir}}`), MongoDB/Application thêm `{{service_name}}`, Application thêm `{{app_name}}`.
+- Lệnh viết trên một dòng, dùng biến dạng `{{var}}`: `{{host_name}}`, `{{host_ip}}`, Oracle thêm `{{instance}}`, `{{asm_instance}}`, `{{grid_home}}`, `{{oracle_home}}`, `{{oracle_user}}` (Bước 11 có `{{alert_dir}}`), MongoDB/Application thêm `{{service_name}}`, Application thêm `{{app_name}}`.
 - SQL script được gửi vào stdin của lệnh (không qua `echo`), nên `v$asm_diskgroup`, dấu nháy trong SQL giữ nguyên.
-- Áp dụng cùng quy tắc chặn như dynamic module: không cho `$(`, backtick, `sudo`/`su`, `rm -rf /`, redirect vào `/dev/*`.
+- Áp dụng cùng quy tắc chặn như dynamic module (không cho `$(`, backtick, `sudo`, `rm -rf /`, redirect vào `/dev/*`), riêng `su` được phép để chạy lệnh bằng user oracle.
 
-Ví dụ: nếu user SSH chưa có `ORACLE_HOME` của grid, sửa lệnh Bước 10 thành
-`export ORACLE_HOME=/u01/app/19.3.0/grid; export ORACLE_SID={{asm_instance}}; $ORACLE_HOME/bin/sqlplus -S / as sysasm`.
+Lệnh Oracle mặc định (SSH bằng root, Oracle 19c):
+
+| Bước | Lệnh mặc định |
+|------|---------------|
+| 3 – CRS | `{{grid_home}}/bin/crsctl stat res -t` (19c không còn `crs_stat`; dự phòng `crs_stat -t` cho 11g) |
+| 4 – OCR | `{{grid_home}}/bin/ocrcheck` |
+| 5 – Voting disk | `{{grid_home}}/bin/crsctl query css votedisk` |
+| 6–11 (sqlplus) | `su - {{oracle_user}} -c "export ORACLE_HOME={{oracle_home}} ORACLE_SID={{instance}}; {{oracle_home}}/bin/sqlplus -S / as sysdba"`, SQL gửi qua stdin |
+| 10 – ASM | truy vấn `v$asm_diskgroup` từ instance DB (không cần user grid / sysasm) |
+| 11 – Alert log | `tail -1000 {{alert_dir}}/alert_{{instance}}.log` |
+
+`{{grid_home}}`, `{{oracle_home}}`, `{{oracle_user}}` lấy từ config (`oracle.grid_home`, `oracle.oracle_home`, `oracle.oracle_user`); không khai báo thì bước **Dò môi trường Oracle** tự tìm trên node DB: grid home từ tiến trình `.../bin/ocssd.bin` (hoặc dòng `+ASM` trong `/etc/oratab`), ORACLE_HOME từ dòng của database trong `/etc/oratab` hoặc (khi không có oratab, như trên AIX) từ thuộc tính `ORACLE_HOME` của resource database trong `crsctl stat res -p`, user từ tiến trình `ora_pmon_<instance>`. Không tìm được thì các bước cần giá trị đó báo ERROR và chỉ rõ key cần khai báo.
 
 ---
 

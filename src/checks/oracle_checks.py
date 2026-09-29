@@ -3,6 +3,7 @@ Oracle Check Module – 11 bước kiểm tra Oracle RAC theo kịch bản Daily
 """
 import logging
 import re
+from collections import Counter
 from typing import List, Optional
 
 from src.builtin_commands import BuiltinCommandSet, BuiltinCommandStore, step_name
@@ -54,11 +55,80 @@ def check_disk_space(client: SSHClient, host_name: str, commands: BuiltinCommand
     return CheckResult(SYSTEM, host_name, step_name(key), *disk_space_check(client, commands, key, ctx))
 
 
-# ── Bước 3: Kiểm tra CRS (crs_stat -t) ───────────────────────────────────────
+# ── Bước 3: Kiểm tra CRS (crsctl stat res -t / crs_stat -t) ──────────────────
+
+CRS_TARGETS = {"ONLINE", "OFFLINE"}
+CRS_SECTION_LINES = {"local resources", "cluster resources"}
+
 
 def _command_not_found(res: CommandResult) -> bool:
     stderr = res.stderr.lower()
-    return res.exit_code == 127 or "not found" in stderr or "no such file" in stderr
+    return (
+        res.exit_code == 127
+        or "not found" in stderr
+        or "no such file" in stderr
+        or "does not exist" in stderr  # AIX: "A file or directory in the path name does not exist."
+    )
+
+
+def parse_crs_issues(output: str, allowed_offline: List[str]) -> List[str]:
+    """
+    Trả về các resource có Target ≠ State. Đọc được 2 định dạng:
+    - crsctl stat res -t (12c+): tên resource trên 1 dòng, các dòng thụt lề bên dưới
+      là "[số thứ tự] TARGET STATE [SERVER] [STATE DETAILS]".
+    - crs_stat -t (11g): mỗi dòng "Name Type Target State Host".
+
+    Bỏ qua slot thừa: instance không gán server nào trong khi resource đã ONLINE trên đủ số node
+    (vd. ora.asmgroup của Flex ASM 19c có cardinality 3 nên trên cụm 2 node slot 3 luôn ONLINE/OFFLINE).
+    """
+    allowed = [a.lower() for a in allowed_offline]
+    entries = []  # (resource, target, state, server)
+    resource = None
+    # crsctl in theo cột cố định: vị trí cột Server / State details lấy từ dòng tiêu đề,
+    # vì cột State details có khoảng trắng ("Instance Shutdown,STABLE") và Server có thể trống
+    server_col = details_col = None
+
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Name ") and "Server" in line:
+            server_col = line.index("Server")
+            details_col = line.find("State details")
+            continue
+        if (not stripped or stripped.startswith("---") or stripped.startswith("Name ")
+                or stripped.lower() in CRS_SECTION_LINES):
+            continue
+        parts = stripped.split()
+        if not line[0].isspace():
+            if len(parts) >= 4 and parts[2].upper() in CRS_TARGETS:
+                entries.append((parts[0], parts[2].upper(), parts[3].upper(), parts[4] if len(parts) > 4 else ""))
+                resource = None
+            else:
+                resource = parts[0]
+            continue
+        if resource is None:
+            continue
+        if parts[0].isdigit():
+            parts = parts[1:]
+        # Dòng tiếp nối của cột State details (bị ngắt dòng) không bắt đầu bằng ONLINE/OFFLINE
+        if len(parts) >= 2 and parts[0].upper() in CRS_TARGETS:
+            if server_col is not None:
+                end = details_col if details_col > server_col else None
+                server = line[server_col:end].strip().split(" ")[0] if len(line) > server_col else ""
+            else:
+                server = parts[2] if len(parts) > 3 else ""
+            entries.append((resource, parts[0].upper(), parts[1].upper(), server))
+
+    servers = {server for _, _, _, server in entries if server}
+    online = Counter(res_name for res_name, _, state, _ in entries if state == "ONLINE")
+    issues = []
+    for res_name, target, state, server in entries:
+        if target == state or any(a in res_name.lower() for a in allowed):
+            continue
+        if not server and servers and online[res_name] >= len(servers):
+            continue
+        where = f", server={server}" if server else ""
+        issues.append(f"{res_name} (target={target}, state={state}{where})")
+    return issues
 
 
 def check_crs_status(client: SSHClient, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
@@ -69,27 +139,18 @@ def check_crs_status(client: SSHClient, host_name: str, commands: BuiltinCommand
     ])
     res = commands.run(client, key, "main", ctx)
     if not res.success and _command_not_found(res) and commands.has_command(key, "fallback"):
-        # Thử lệnh dự phòng (vd. đường dẫn đầy đủ trong grid home)
+        # Thử lệnh dự phòng (vd. crs_stat -t trên 11g)
+        main_res = res
         res = commands.run(client, key, "fallback", ctx)
+        if not res.success:
+            return _err(host_name, name,
+                        f"{main_res.command} thất bại: {main_res.stderr[:200]} | "
+                        f"lệnh dự phòng {res.command} thất bại: {res.stderr[:200]}")
     if not res.success:
         return _err(host_name, name, f"{res.command} thất bại: {res.stderr[:200]}")
 
-    issues = []
-    for line in res.stdout.splitlines():
-        if not line.strip() or line.startswith("Name") or line.startswith("---"):
-            continue
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        svc_name = parts[0].lower()
-        target = parts[2].upper() if len(parts) > 2 else ""
-        state = parts[3].upper() if len(parts) > 3 else ""
-        # Cho phép offline các service ngoại lệ
-        if any(allowed.lower() in svc_name for allowed in allowed_offline):
-            continue
-        if target != state:
-            issues.append(f"{parts[0]} (target={target}, state={state})")
-
+    # Cho phép offline các service ngoại lệ trong oracle.crs_allowed_offline
+    issues = parse_crs_issues(res.stdout, allowed_offline)
     if issues:
         return _crit(host_name, name,
                      f"CRS không đồng bộ target/state: {', '.join(issues)}",
@@ -137,9 +198,14 @@ def check_voting_disk(client: SSHClient, host_name: str, commands: BuiltinComman
     total_located = int(located_match.group(1)) if located_match else online_count
 
     if online_count < required or total_located < required:
+        hint = ""
+        if online_count == total_located:
+            # Diskgroup EXTERNAL redundancy chỉ có 1 voting disk (NORMAL: 3, HIGH: 5)
+            hint = (" – nếu diskgroup chứa voting disk dùng EXTERNAL redundancy thì đây là thiết kế, "
+                    "chỉnh thresholds.voting_disk_required")
         return _crit(host_name, name,
-                     f"Chỉ có {online_count} ONLINE voting disk (yêu cầu {required})",
-                     raw=output, details={"online": online_count, "required": required})
+                     f"{online_count}/{total_located} voting disk ONLINE (yêu cầu {required}){hint}",
+                     raw=output, details={"online": online_count, "located": total_located, "required": required})
     return _ok(host_name, name,
                f"{online_count}/{total_located} voting disk ONLINE",
                raw=output)
@@ -296,6 +362,7 @@ def check_alert_log(client: SSHClient, host_name: str, commands: BuiltinCommandS
     key = "oracle.alert_log"
     name = step_name(key)
     keywords = get("thresholds.alert_log_error_keywords", ["ORA-", "TNS-", "Errors in file"])
+    ignore = get("thresholds.alert_log_ignore_keywords", []) or []
     instance_name = ctx["instance"]
 
     # Lấy đường dẫn alert log qua sqlplus
@@ -309,8 +376,10 @@ def check_alert_log(client: SSHClient, host_name: str, commands: BuiltinCommandS
                 break
 
     if not alert_dir:
-        # Fallback đường dẫn phổ biến
-        alert_dir = f"/u01/app/oracle/diag/rdbms/{instance_name.lower()}/{instance_name.lower()}/trace"
+        # Fallback theo cấu trúc ADR: diag/rdbms/<db_unique_name>/<instance>/trace.
+        # RAC: db_unique_name thường là tên instance bỏ số cuối (simo1 → simo)
+        db_unique_name = ctx.get("db_unique_name") or re.sub(r"\d+$", "", instance_name) or instance_name
+        alert_dir = f"/u01/app/oracle/diag/rdbms/{db_unique_name.lower()}/{instance_name}/trace"
 
     # Đọc alert log rồi lọc theo từ khoá lỗi
     res_scan = commands.run(client, key, "scan", {**ctx, "alert_dir": alert_dir})
@@ -320,14 +389,128 @@ def check_alert_log(client: SSHClient, host_name: str, commands: BuiltinCommandS
 
     error_lines = [
         line for line in res_scan.stdout.splitlines()
-        if any(kw in line for kw in keywords)
-    ][-20:]
+        if any(kw in line for kw in keywords) and not any(ig in line for ig in ignore)
+    ]
 
     if error_lines:
+        # Thống kê theo mã lỗi để báo cáo cho biết lỗi gì, không chỉ số dòng
+        codes = Counter(re.findall(r"\b(?:ORA|TNS)-\d+", "\n".join(error_lines)))
+        summary = ", ".join(f"{code} ×{count}" for code, count in codes.most_common(5))
+        recent = error_lines[-20:]
         return _warn(host_name, name,
-                     f"Phát hiện {len(error_lines)} dòng lỗi trong alert log",
-                     raw="\n".join(error_lines), details={"error_lines": error_lines[:10]})
+                     f"Phát hiện {len(error_lines)} dòng lỗi trong alert log" + (f": {summary}" if summary else ""),
+                     raw="\n".join(recent),
+                     details={"error_lines": recent[-10:], "error_codes": dict(codes)})
     return _ok(host_name, name, f"Alert log không có dòng chứa từ khoá lỗi ({', '.join(keywords)})")
+
+
+# ── Dò môi trường Oracle (GRID_HOME, ORACLE_HOME, user chạy DB) ─────────────
+
+ENV_KEYS = ("grid_home", "oracle_home", "oracle_user")
+GRID_PROCESS_RE = re.compile(r"(/\S+)/bin/(?:ocssd|crsd|ohasd|evmd)\.bin\b")
+
+
+def parse_oracle_environment(ps_output: str, oratab: str, instance: str) -> dict:
+    """
+    Lấy grid_home, oracle_home, oracle_user từ output `ps -eo user,args` và /etc/oratab.
+    Chỉ trả về các giá trị tìm được.
+    """
+    env = {}
+    m = GRID_PROCESS_RE.search(ps_output)
+    if m:
+        env["grid_home"] = m.group(1)
+    pmon_re = re.compile(rf"\bora_pmon_{re.escape(instance)}\b", re.IGNORECASE)
+    for line in ps_output.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and pmon_re.search(parts[1]):
+            env["oracle_user"] = parts[0]
+            break
+
+    # /etc/oratab: SID:ORACLE_HOME:Y|N
+    entries = []
+    for line in oratab.splitlines():
+        line = line.split("#", 1)[0].strip()
+        fields = line.split(":")
+        if len(fields) >= 2 and fields[0] and fields[1]:
+            entries.append((fields[0], fields[1]))
+    if "grid_home" not in env:
+        asm = [home for sid, home in entries if sid.upper().startswith("+ASM")]
+        if asm:
+            env["grid_home"] = asm[0]
+    db_name = re.sub(r"\d+$", "", instance)
+    wanted = {instance.lower(), db_name.lower()}
+    homes = [home for sid, home in entries if sid.lower() in wanted]
+    if not homes:
+        # Chỉ có 1 database trong oratab thì dùng luôn
+        db_entries = [home for sid, home in entries if not sid.startswith(("+", "-"))]
+        homes = db_entries if len(set(db_entries)) == 1 else []
+    if homes:
+        env["oracle_home"] = homes[0]
+    return env
+
+
+def parse_crs_database_resources(output: str, instance: str) -> dict:
+    """
+    Đọc `crsctl stat res -p` (các resource ora.database.type) và lấy ORACLE_HOME, DB_UNIQUE_NAME,
+    owner của database chứa instance. Một host có thể chạy nhiều database (vd. simo1 và mid1).
+    """
+    db_name = re.sub(r"\d+$", "", instance).lower()
+    for block in re.split(r"\n\s*\n", output.strip()):
+        attrs = {}
+        for line in block.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                attrs[k.strip()] = v.strip()
+        if attrs.get("TYPE", "ora.database.type") != "ora.database.type":
+            continue
+        instances = {v.lower() for k, v in attrs.items() if "INST_NAME" in k and v}
+        names = {attrs.get("DB_UNIQUE_NAME", "").lower(),
+                 attrs.get("NAME", "").lower().removeprefix("ora.").removesuffix(".db")}
+        if instance.lower() not in instances and db_name not in names:
+            continue
+        env = {}
+        home = attrs.get("ORACLE_HOME", "")
+        if home.startswith("/"):
+            env["oracle_home"] = home
+        if attrs.get("DB_UNIQUE_NAME"):
+            env["db_unique_name"] = attrs["DB_UNIQUE_NAME"]
+        owner = re.search(r"owner:([^:,]+):", attrs.get("ACL", ""))
+        if owner:
+            env["oracle_user"] = owner.group(1)
+        return env
+    return {}
+
+
+def resolve_environment(client, commands: BuiltinCommandSet, host_cfg: dict, cfg: dict, ctx: dict) -> dict:
+    """Giá trị trong config được ưu tiên; thiếu thì dò trên host."""
+    configured = {k: host_cfg.get(k) or cfg.get(k) for k in ENV_KEYS}
+    discovered = {}
+    key = "oracle.environment"
+    if not all(configured.values()) and commands.is_enabled(key):
+        res_ps = commands.run(client, key, "ps", ctx)
+        res_tab = commands.run(client, key, "oratab", ctx)
+        discovered = parse_oracle_environment(
+            res_ps.stdout if res_ps.success else "",
+            res_tab.stdout if res_tab.success else "",
+            ctx["instance"],
+        )
+        grid_home = configured["grid_home"] or discovered.get("grid_home")
+        if not (configured["oracle_home"] or discovered.get("oracle_home")) and grid_home:
+            # Không có /etc/oratab (vd. AIX): lấy ORACLE_HOME từ cấu hình resource database
+            res_crs = commands.run(client, key, "crs_resources", {**ctx, "grid_home": grid_home})
+            if res_crs.success:
+                crs_env = parse_crs_database_resources(res_crs.stdout, ctx["instance"])
+                discovered = {**crs_env, **discovered}
+    env = {k: configured[k] or discovered.get(k, "") for k in ENV_KEYS}
+    env["oracle_user"] = env["oracle_user"] or "oracle"
+    if not ctx.get("db_unique_name") and discovered.get("db_unique_name"):
+        env["db_unique_name"] = discovered["db_unique_name"]
+    logger.info(
+        "Oracle %s: GRID_HOME=%s ORACLE_HOME=%s user=%s (config: %s, dò được: %s)",
+        ctx["host_name"], env["grid_home"] or "?", env["oracle_home"] or "?", env["oracle_user"],
+        [k for k in ENV_KEYS if configured[k]], sorted(discovered),
+    )
+    return env
 
 
 # ── Entry point: chạy tất cả checks cho Oracle ───────────────────────────────
@@ -369,11 +552,17 @@ def run_all(commands: Optional[BuiltinCommandSet] = None) -> List[CheckResult]:
             "host_ip": host_cfg["ip"],
             "instance": host_cfg.get("instance", "simo1"),
             "asm_instance": host_cfg.get("asm_instance", "+ASM1"),
+            "db_unique_name": host_cfg.get("db_unique_name", cfg.get("db_unique_name", "")),
+            **{k: "" for k in ENV_KEYS},
         }
+        # Chỉ các bước 3–11 cần GRID_HOME/ORACLE_HOME
+        needs_env = any(fn not in {f for _, f in ALL_NODE_STEPS} for fn in steps)
 
         logger.info(f"Oracle: kết nối {host_name} ({host_cfg['ip']})")
         try:
             with ssh_connect(host_cfg) as client:
+                if needs_env:
+                    ctx.update(resolve_environment(client, commands, host_cfg, cfg, ctx))
                 for fn in steps:
                     results.append(fn(client, host_name, commands, ctx))
         except ConnectionError as e:

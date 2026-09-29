@@ -25,3 +25,5 @@ cryptography>=42.0.0
 
 # Utilities
 python-dateutil>=2.9.0
+# Dữ liệu múi giờ cho zoneinfo khi image/server không có tzdata hệ thống
+tzdata>=2024.1

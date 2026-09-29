@@ -7,7 +7,7 @@ import re
 from typing import List, Optional
 
 from src.builtin_commands import BuiltinCommandSet, BuiltinCommandStore, step_name
-from src.checks.common import disk_space_check, service_check, system_info_check
+from src.checks.common import disk_space_check, process_check, service_check, system_info_check
 from src.config_manager import get
 from src.logger import CheckResult
 from src.ssh_manager import ssh_connect
@@ -48,9 +48,68 @@ def check_service(client, system: str, host_name: str, commands: BuiltinCommandS
     return _make(system, host_name, name, *service_check(client, commands, key, ctx))
 
 
+def check_process_service(client, system: str, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
+    key = "application.process"
+    name = f"{step_name(key)} {ctx['service_name']}"
+    return _make(system, host_name, name, *process_check(client, commands, key, ctx))
+
+
 def _split_two_columns(line: str) -> List[str]:
     """Tách 'TÊN<tab>GIÁ TRỊ' (hoặc cách bằng khoảng trắng) thành 2 phần."""
     return line.split("\t", 1) if "\t" in line else line.split(None, 1)
+
+
+def check_docker_service(client, system: str, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
+    """Kiểm tra service chạy bằng Docker Swarm (service_type: docker) thay cho systemctl."""
+    key = "application.docker_service"
+    service_name = ctx["service_name"]
+    name = f"{step_name(key)} {service_name}"
+
+    # Trên Swarm manager: so số replica đang chạy với số replica yêu cầu
+    res_svc = commands.run(client, key, "service_ls", ctx)
+    rows = []
+    if res_svc.success:
+        rows = [parts for parts in map(_split_two_columns, res_svc.stdout.splitlines()) if len(parts) == 2]
+    # --filter name= khớp theo tiền tố, ưu tiên dòng trùng tên chính xác
+    rows = [r for r in rows if r[0] == service_name] or rows
+    if rows:
+        not_ready, down = [], []
+        for svc, replicas in rows:
+            m = re.match(r"(\d+)/(\d+)", replicas)
+            if m and int(m.group(1)) == 0 and int(m.group(2)) > 0:
+                down.append(f"{svc}: {replicas}")
+            elif m and m.group(1) != m.group(2):
+                not_ready.append(f"{svc}: {replicas}")
+        summary = ", ".join(f"{svc}: {replicas}" for svc, replicas in rows)
+        if down:
+            return _crit(system, host_name, name, f"Service không có replica nào chạy: {', '.join(down)}",
+                         raw=res_svc.stdout, details={"issues": down + not_ready})
+        if not_ready:
+            return _warn(system, host_name, name, f"Service thiếu replica: {', '.join(not_ready)}",
+                         raw=res_svc.stdout, details={"issues": not_ready})
+        return _ok(system, host_name, name, f"Service đủ replica ({summary})", raw=res_svc.stdout)
+
+    # Không phải manager (hoặc không có Swarm service trùng tên): xem container trên node này
+    res_ps = commands.run(client, key, "ps", ctx)
+    if not res_ps.success:
+        return _err(system, host_name, name, f"docker ps thất bại: {res_ps.stderr[:200]}")
+    running = [
+        parts[0] for parts in map(_split_two_columns, res_ps.stdout.splitlines())
+        if len(parts) == 2 and "up" in parts[1].lower()
+    ]
+    if running:
+        return _ok(system, host_name, name,
+                   f"{len(running)} container của {service_name} đang chạy trên node", raw=res_ps.stdout)
+    if res_svc.success:
+        return _crit(system, host_name, name,
+                     f"Không tìm thấy Swarm service {service_name} và không có container nào đang chạy",
+                     raw=res_svc.stdout)
+    # Node worker: Swarm tự phân bổ replica nên node không chạy container nào cũng là bình thường;
+    # số replica được kiểm tra trên node manager
+    return _ok(system, host_name, name,
+               f"Node worker không chạy container nào của {service_name} "
+               f"(replica được kiểm tra trên Swarm manager)",
+               raw=res_ps.stdout)
 
 
 def check_docker_containers(client, system: str, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
@@ -93,6 +152,13 @@ def check_docker_containers(client, system: str, host_name: str, commands: Built
                "Tất cả Docker container đang chạy", raw=output)
 
 
+SERVICE_CHECKS = {
+    "systemd": ("application.service", check_service),
+    "docker": ("application.docker_service", check_docker_service),
+    "process": ("application.process", check_process_service),
+}
+
+
 def run_all(commands: Optional[BuiltinCommandSet] = None) -> List[CheckResult]:
     """Chạy kiểm tra tất cả ứng dụng được cấu hình."""
     if commands is None:
@@ -102,29 +168,37 @@ def run_all(commands: Optional[BuiltinCommandSet] = None) -> List[CheckResult]:
 
     for app in apps:
         app_name = app.get("name", "Unknown")
-        service = app.get("service", "")
         has_docker = app.get("has_docker", False)
         hosts = app.get("hosts", [])
 
-        steps = [
-            ("application.system_info", check_system_info),
-            ("application.disk_space", check_disk_space),
-        ]
-        if service:
-            steps.append(("application.service", check_service))
-        if has_docker:
-            steps.append(("application.docker", check_docker_containers))
-        steps = [fn for key, fn in steps if commands.is_enabled(key)]
-        if not steps:
-            continue
-
         for host_cfg in hosts:
             host_name = host_cfg.get("name", host_cfg["ip"])
+            # service / service_type khai báo ở host ghi đè giá trị của ứng dụng
+            service = host_cfg.get("service", app.get("service", ""))
+            service_type = str(host_cfg.get("service_type", app.get("service_type", "systemd"))).lower()
+            if service_type not in SERVICE_CHECKS:
+                logger.warning(f"App [{app_name}]: service_type '{service_type}' không hợp lệ, dùng systemd")
+                service_type = "systemd"
+
+            steps = [
+                ("application.system_info", check_system_info),
+                ("application.disk_space", check_disk_space),
+            ]
+            if service:
+                steps.append(SERVICE_CHECKS[service_type])
+            if has_docker:
+                steps.append(("application.docker", check_docker_containers))
+            steps = [fn for key, fn in steps if commands.is_enabled(key)]
+            if not steps:
+                continue
+
             ctx = {
                 "host_name": host_name,
                 "host_ip": host_cfg["ip"],
                 "app_name": app_name,
                 "service_name": service,
+                # Tên tiến trình để kiểm tra khi unit systemd ở trạng thái active (exited)
+                "process_pattern": host_cfg.get("process_pattern", app.get("process_pattern", "")),
             }
             logger.info(f"App [{app_name}]: kết nối {host_name}")
             batch = []

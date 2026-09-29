@@ -11,7 +11,6 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Optional
 
 from src.config_manager import get
@@ -23,6 +22,7 @@ from src.dynamic_modules import (
 )
 from src.logger import ResultStore
 from src.ssh_manager import CommandResult
+from src import timeutil
 
 logger = logging.getLogger("dailycheck.builtin_commands")
 
@@ -37,10 +37,17 @@ SYSTEM_LABELS = {
 
 _BASE_VARIABLES = ("host_name", "host_ip")
 SYSTEM_VARIABLES = {
-    "oracle": _BASE_VARIABLES + ("instance", "asm_instance"),
+    "oracle": _BASE_VARIABLES + ("instance", "asm_instance", "grid_home", "oracle_home", "oracle_user"),
     "mongodb": _BASE_VARIABLES + ("service_name",),
     "hadoop": _BASE_VARIABLES,
     "application": _BASE_VARIABLES + ("app_name", "service_name"),
+}
+
+# Gợi ý khi biến chưa có giá trị lúc chạy
+VARIABLE_HINTS = {
+    "grid_home": "khai báo oracle.grid_home trong config.yaml (không dò được từ tiến trình ocssd.bin / dòng +ASM trong /etc/oratab)",
+    "oracle_home": "khai báo oracle.oracle_home trong config.yaml (không tìm thấy dòng của database trong /etc/oratab)",
+    "oracle_user": "khai báo oracle.oracle_user trong config.yaml",
 }
 
 
@@ -84,7 +91,12 @@ class BuiltinStepDef:
 
 # ── Lệnh mặc định ─────────────────────────────────────────────────────────────
 
-SQLPLUS_SYSDBA = "export ORACLE_SID={{instance}}; sqlplus -S / as sysdba"
+# SSH bằng root: sqlplus chạy bằng user sở hữu database, ORACLE_HOME đặt tường minh
+# (không phụ thuộc .profile). grid_home/oracle_home/oracle_user lấy từ config hoặc tự dò.
+SQLPLUS_SYSDBA = (
+    'su - {{oracle_user}} -c "export ORACLE_HOME={{oracle_home}} ORACLE_SID={{instance}}; '
+    '{{oracle_home}}/bin/sqlplus -S / as sysdba"'
+)
 
 ARCHIVE_SWITCH_SQL = """
 alter system archive log current;
@@ -146,8 +158,16 @@ show parameter background_dump_dest;
 EXIT;
 """.strip()
 
-DISK_HINT = "Output dạng df: cột áp chót là Use% (vd 85%), cột cuối là Mounted on. Phân vùng ≥ thresholds.disk_usage_max_pct → CRITICAL."
-SYSTEMCTL_HINT = "Output chứa 'active (running)' → OK; chứa 'inactive' hoặc 'failed' → CRITICAL; còn lại → WARNING."
+DISK_HINT = (
+    "Output dạng df có dòng tiêu đề: đọc cột Use% / %Used / Capacity và cột Mounted on "
+    "(dùng được cho df -k trên AIX, df -kh, -T, -P trên Linux). Phân vùng ≥ thresholds.disk_usage_max_pct → CRITICAL. "
+    "Bỏ qua /cdrom, mount nội bộ của Docker và thresholds.disk_exclude_mounts."
+)
+SYSTEMCTL_HINT = (
+    "Lệnh 1: đọc dòng 'Active:': active (running) → OK; inactive/failed → CRITICAL; trạng thái khác → WARNING. "
+    "Không tìm thấy unit → ERROR, kèm danh sách unit có tên gần giống (lệnh 2). "
+    "active (exited) → tìm tiến trình có tên service (lệnh 3): có → OK, không → WARNING."
+)
 SQL_ERROR_HINT = "Có ORA-/SP2- hoặc exit code khác 0 → ERROR."
 
 
@@ -164,6 +184,26 @@ def _system_info_step(system: str) -> BuiltinStepDef:
     )
 
 
+def _systemd_service_step(system: str, name: str, extra_hint: str = "") -> BuiltinStepDef:
+    return BuiltinStepDef(
+        key=f"{system}.service",
+        system=system,
+        name=name,
+        commands=(
+            BuiltinCommandDef("main", "Trạng thái service", "systemctl status {{service_name}}"),
+            BuiltinCommandDef(
+                "units", "Liệt kê unit (gợi ý khi không tìm thấy service)",
+                "systemctl list-unit-files --type=service --no-legend", optional=True,
+            ),
+            BuiltinCommandDef(
+                "processes", "Liệt kê tiến trình (khi unit ở trạng thái active (exited))",
+                "ps -eo pid,args", optional=True,
+            ),
+        ),
+        output_hint=SYSTEMCTL_HINT + extra_hint,
+    )
+
+
 def _disk_space_step(system: str, command: str) -> BuiltinStepDef:
     return BuiltinStepDef(
         key=f"{system}.disk_space",
@@ -176,6 +216,27 @@ def _disk_space_step(system: str, command: str) -> BuiltinStepDef:
 
 BUILTIN_STEPS: tuple = (
     # ── Oracle ──
+    BuiltinStepDef(
+        key="oracle.environment",
+        system="oracle",
+        name="Dò môi trường Oracle",
+        commands=(
+            BuiltinCommandDef("ps", "Tiến trình đang chạy", "ps -eo user,args"),
+            BuiltinCommandDef("oratab", "Danh sách ORACLE_HOME", "cat /etc/oratab", optional=True),
+            BuiltinCommandDef(
+                "crs_resources", "Cấu hình database trong Clusterware",
+                '{{grid_home}}/bin/crsctl stat res -p -w "TYPE = ora.database.type"', optional=True,
+            ),
+        ),
+        output_hint=(
+            "Chạy trên node thực hiện bước 3–11, không tạo dòng trong báo cáo. "
+            "{{grid_home}}: đường dẫn trước /bin/ocssd.bin (hoặc crsd.bin, ohasd.bin), không có thì lấy dòng +ASM trong /etc/oratab. "
+            "{{oracle_home}}: dòng <instance hoặc tên DB>:<home> trong /etc/oratab; không có thì lấy thuộc tính "
+            "ORACLE_HOME của resource database chứa instance (lệnh 3, cũng cho DB_UNIQUE_NAME). "
+            "{{oracle_user}}: user chạy tiến trình ora_pmon_<instance> (mặc định oracle). "
+            "Giá trị khai báo trong config (oracle.grid_home, oracle.oracle_home, oracle.oracle_user) được ưu tiên."
+        ),
+    ),
     _system_info_step("oracle"),
     _disk_space_step("oracle", "df -k"),
     BuiltinStepDef(
@@ -183,14 +244,15 @@ BUILTIN_STEPS: tuple = (
         system="oracle",
         name="Bước 3 – CRS Status",
         commands=(
-            BuiltinCommandDef("main", "Lệnh chính", "crs_stat -t"),
+            BuiltinCommandDef("main", "Lệnh chính", "{{grid_home}}/bin/crsctl stat res -t"),
             BuiltinCommandDef(
                 "fallback", "Lệnh dự phòng (khi không tìm thấy lệnh chính, để trống = bỏ qua)",
-                "/u01/app/19.3.0/grid/bin/crs_stat -t", optional=True,
+                "crs_stat -t", optional=True,
             ),
         ),
         output_hint=(
-            "Output dạng bảng crs_stat -t: cột 1 tên resource, cột 3 Target, cột 4 State. "
+            "Output của crsctl stat res -t (tên resource trên 1 dòng, các dòng thụt lề bên dưới: "
+            "[số thứ tự] TARGET STATE SERVER ...) hoặc bảng crs_stat -t (Name Type Target State Host). "
             "Target ≠ State → CRITICAL (trừ oracle.crs_allowed_offline)."
         ),
     ),
@@ -198,7 +260,7 @@ BUILTIN_STEPS: tuple = (
         key="oracle.ocr",
         system="oracle",
         name="Bước 4 – OCR Check",
-        commands=(BuiltinCommandDef("main", "Kiểm tra OCR", "ocrcheck"),),
+        commands=(BuiltinCommandDef("main", "Kiểm tra OCR", "{{grid_home}}/bin/ocrcheck"),),
         output_hint=(
             "Thiếu 'integrity check succeeded' → CRITICAL; "
             "thiếu 'Cluster registry integrity check succeeded' → WARNING."
@@ -208,7 +270,7 @@ BUILTIN_STEPS: tuple = (
         key="oracle.voting_disk",
         system="oracle",
         name="Bước 5 – Voting Disk",
-        commands=(BuiltinCommandDef("main", "Truy vấn voting disk", "crsctl query css votedisk"),),
+        commands=(BuiltinCommandDef("main", "Truy vấn voting disk", "{{grid_home}}/bin/crsctl query css votedisk"),),
         output_hint=(
             "Đếm số từ ONLINE và dòng 'Located N voting disk(s)'. "
             "Ít hơn thresholds.voting_disk_required → CRITICAL."
@@ -256,15 +318,12 @@ BUILTIN_STEPS: tuple = (
         system="oracle",
         name="Bước 10 – ASM Disk Group",
         commands=(
-            BuiltinCommandDef(
-                "main", "sqlplus (sysasm)",
-                "export ORACLE_SID={{asm_instance}}; sqlplus -S / as sysasm",
-                script=ASM_SQL, timeout_sec=60,
-            ),
+            BuiltinCommandDef("main", "sqlplus", SQLPLUS_SYSDBA, script=ASM_SQL, timeout_sec=60),
         ),
         output_hint=(
             "Mỗi dòng dữ liệu: NAME TOTAL_MB FREE_MB %USED (cột 4 là % sử dụng). "
-            "≥ thresholds.asm_usage_max_pct → CRITICAL. " + SQL_ERROR_HINT
+            "≥ thresholds.asm_usage_max_pct → CRITICAL. v$asm_diskgroup đọc được từ instance DB; "
+            "muốn chạy trên instance ASM thì dùng {{asm_instance}} và sysasm. " + SQL_ERROR_HINT
         ),
     ),
     BuiltinStepDef(
@@ -283,21 +342,16 @@ BUILTIN_STEPS: tuple = (
         ),
         output_hint=(
             "Lệnh 1: dòng chứa background_dump_dest, giá trị ở cột cuối → {{alert_dir}} "
-            "(không có thì dùng /u01/app/oracle/diag/rdbms/<instance>/<instance>/trace). "
-            "Lệnh 2: nội dung alert log; dòng chứa thresholds.alert_log_error_keywords → WARNING; "
-            "lệnh lỗi → ERROR."
+            "(không lấy được thì dùng /u01/app/oracle/diag/rdbms/<db_unique_name>/<instance>/trace, "
+            "db_unique_name lấy từ config hoặc tên instance bỏ số cuối). "
+            "Lệnh 2: nội dung alert log; dòng chứa thresholds.alert_log_error_keywords "
+            "(trừ dòng chứa thresholds.alert_log_ignore_keywords) → WARNING, kèm thống kê mã lỗi; lệnh lỗi → ERROR."
         ),
     ),
     # ── MongoDB ──
     _system_info_step("mongodb"),
     _disk_space_step("mongodb", "df -kh"),
-    BuiltinStepDef(
-        key="mongodb.service",
-        system="mongodb",
-        name="Bước 3 – Trạng thái mongod",
-        commands=(BuiltinCommandDef("main", "Trạng thái service", "systemctl status {{service_name}}"),),
-        output_hint=SYSTEMCTL_HINT,
-    ),
+    _systemd_service_step("mongodb", "Bước 3 – Trạng thái mongod"),
     # ── Hadoop ──
     _system_info_step("hadoop"),
     _disk_space_step("hadoop", "df -T"),
@@ -314,12 +368,37 @@ BUILTIN_STEPS: tuple = (
     # ── Application ──
     _system_info_step("application"),
     _disk_space_step("application", "df -kh"),
+    _systemd_service_step("application", "Bước 3 – Service", " Chỉ chạy khi ứng dụng có khai báo service."),
     BuiltinStepDef(
-        key="application.service",
+        key="application.process",
         system="application",
-        name="Bước 3 – Service",
-        commands=(BuiltinCommandDef("main", "Trạng thái service", "systemctl status {{service_name}}"),),
-        output_hint=SYSTEMCTL_HINT + " Chỉ chạy khi ứng dụng có khai báo service.",
+        name="Bước 3 – Tiến trình",
+        commands=(BuiltinCommandDef("main", "Liệt kê tiến trình", "ps -eo pid,args"),),
+        output_hint=(
+            "Dùng khi ứng dụng khai báo service_type: process (ứng dụng không chạy bằng systemd). "
+            "Mỗi dòng: PID DÒNG_LỆNH; có dòng lệnh chứa giá trị service → OK, không có → CRITICAL."
+        ),
+    ),
+    BuiltinStepDef(
+        key="application.docker_service",
+        system="application",
+        name="Bước 3 – Docker service",
+        commands=(
+            BuiltinCommandDef(
+                "service_ls", "Replica của Swarm service",
+                r"docker service ls --filter name={{service_name}} --format '{{.Name}}\t{{.Replicas}}'",
+            ),
+            BuiltinCommandDef(
+                "ps", "Container đang chạy trên node",
+                r"docker ps --filter name={{service_name}} --format '{{.Names}}\t{{.Status}}'",
+            ),
+        ),
+        output_hint=(
+            "Dùng khi ứng dụng khai báo service_type: docker. Lệnh 1 (chỉ chạy được trên Swarm manager): "
+            "TÊN<tab>REPLICAS; 0/N → CRITICAL, thiếu replica → WARNING. "
+            "Nếu không phải manager: lệnh 2 liệt kê container đang chạy trên node (không có cũng là OK, "
+            "vì Swarm tự phân bổ replica – số replica được kiểm tra trên node manager)."
+        ),
     ),
     BuiltinStepDef(
         key="application.docker",
@@ -361,7 +440,7 @@ def _validate_builtin_command(step: BuiltinStepDef, cmd: BuiltinCommandDef, comm
         if cmd.optional:
             return
         raise ValueError("lệnh không được để trống")
-    _validate_command_template(command)
+    _validate_command_template(command, allow_su=True)
     allowed = set(step.variables) | set(cmd.extra_vars)
     unknown = sorted(set(TEMPLATE_VAR_RE.findall(command)) - allowed)
     if unknown:
@@ -475,9 +554,16 @@ class BuiltinCommandSet:
             return CommandResult("", "Lệnh trống", -1, False, "")
         # Chỉ sanitize các biến thực sự dùng trong lệnh
         used = set(TEMPLATE_VAR_RE.findall(template))
+        empty = sorted(v for v in used if v in context and not str(context[v] or "").strip())
+        if empty:
+            hints = "; ".join(VARIABLE_HINTS[v] for v in empty if v in VARIABLE_HINTS)
+            names = ", ".join("{{" + v + "}}" for v in empty)
+            return CommandResult(
+                "", f"Chưa xác định được {names}" + (f" – {hints}" if hints else ""), -1, False, template,
+            )
         try:
             rendered = render_command_template(
-                template, {k: v for k, v in context.items() if k in used}
+                template, {k: v for k, v in context.items() if k in used}, allow_su=True
             )
         except ValueError as exc:
             return CommandResult("", f"Lệnh không hợp lệ: {exc}", -1, False, template)
@@ -559,7 +645,7 @@ class BuiltinCommandStore:
                         step_key,
                         int(normalized["enabled"]),
                         json.dumps(normalized["commands"], ensure_ascii=False),
-                        datetime.now().isoformat(timespec="seconds"),
+                        timeutil.now().isoformat(timespec="seconds"),
                     ),
                 )
         return self.get_step(step_key)

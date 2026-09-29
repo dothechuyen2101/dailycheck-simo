@@ -4,12 +4,12 @@ Logger & Result Store – Ghi log có cấu trúc và lưu kết quả vào SQLi
 import logging
 import sqlite3
 import json
-from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 from src.config_manager import get
+from src import timeutil
 
 
 # ── Logging setup ────────────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ from src.config_manager import get
 def setup_logging(level: str = "INFO") -> logging.Logger:
     log_dir = Path(get("general.log_dir", "logs"))
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"dailycheck_{datetime.now():%Y%m%d}.log"
+    log_file = log_dir / f"dailycheck_{timeutil.now():%Y%m%d}.log"
 
     fmt = "%(asctime)s [%(levelname)s] %(name)s – %(message)s"
     logging.basicConfig(
@@ -46,7 +46,7 @@ class CheckResult:
     message: str              # Mô tả ngắn
     raw_output: str = ""      # Output thô từ lệnh
     details: dict = field(default_factory=dict)
-    checked_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    checked_at: str = field(default_factory=lambda: timeutil.now().isoformat())
 
 
 @dataclass
@@ -180,7 +180,7 @@ class ResultStore:
                 VALUES (?,?,?,?,?,?,?,?)
             """, (
                 run_id, r.system, r.host, r.check_name,
-                r.status, r.message, datetime.now().isoformat(), channel,
+                r.status, r.message, timeutil.now().isoformat(), channel,
             ))
 
     def get_recent_runs(

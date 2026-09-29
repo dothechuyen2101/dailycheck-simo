@@ -331,7 +331,28 @@ oracle:
   crs_allowed_offline:
     - "ora.gsd"
     - "ora.oc4j"
+
+  # (Tuỳ chọn) Mặc định tự dò trên node DB; khai báo khi dò sai (có thể khai báo riêng từng host)
+  grid_home: "/u01/app/19.0.0/grid"                       # chứa bin/crsctl, bin/ocrcheck
+  oracle_home: "/u01/app/oracle/product/19.0.0/dbhome_1"  # chứa bin/sqlplus
+  oracle_user: "oracle"                                   # user sở hữu database
+  # (Tuỳ chọn) Tên thư mục DB trong diag/rdbms/, dùng khi không lấy được background_dump_dest.
+  # Mặc định: tên instance bỏ số cuối (simo1 → simo)
+  db_unique_name: "simo"
 ```
+
+**Lưu ý khi SSH bằng root (mặc định):** các lệnh sqlplus chạy bằng `su - <oracle_user> -c "export ORACLE_HOME=...; <ORACLE_HOME>/bin/sqlplus ..."`, không phụ thuộc `.profile`; `crsctl`, `ocrcheck` được gọi bằng đường dẫn đầy đủ `<grid_home>/bin/...`. Oracle 19c không còn `crs_stat`, Bước 3 dùng `crsctl stat res -t`. Có thể đổi các lệnh này trên trang **Lệnh Built-in**.
+
+Nếu không khai báo `grid_home`/`oracle_home`/`oracle_user`, hệ thống tự dò trên node DB bằng `ps -eo user,args`, `cat /etc/oratab` và (khi không có oratab) `crsctl stat res -p -w "TYPE = ora.database.type"`. Để tự kiểm tra trên DB1 (bằng root):
+
+```bash
+ps -eo user,args | grep -E "ocssd.bin|ora_pmon" | grep -v grep
+<grid_home>/bin/crsctl stat res -p -w "TYPE = ora.database.type" | grep -E "^(NAME|ORACLE_HOME|DB_UNIQUE_NAME)="
+```
+
+**Các điểm cần biết khi đọc kết quả Oracle:**
+- Bước 3: slot không được gán server (vd. slot 3 của `ora.asmgroup` trên cụm 2 node – Flex ASM 19c mặc định cardinality 3) không bị tính là lỗi khi resource đã ONLINE trên đủ số node.
+- Bước 5: diskgroup dùng EXTERNAL redundancy chỉ có 1 voting disk (NORMAL: 3, HIGH: 5); khi đó chỉnh `thresholds.voting_disk_required` cho khớp thiết kế.
 
 #### 6. Cấu hình MongoDB
 
@@ -382,27 +403,37 @@ hadoop:
 #### 8. Cấu hình ứng dụng
 
 ```yaml
-application:
-  apps:
-    - name: "MyApp"
-      type: "http"           # http, tcp, hoặc tùy chỉnh
-      hosts:
-        - name: "AppServer1"
-          ip: "192.168.1.40"
-          port: 8080
-          ssh:
-            username: "appuser"
-      
-      checks:
-        - type: "http_health"
-          endpoint: "/health"
-          expected_status: 200
-        
-        - type: "disk_usage"
-          path: "/opt/myapp"
-          warning_threshold: 80
-          critical_threshold: 90
+applications:
+  - name: "WSO2 APIM Cluster"
+    service: "wso2am-3.2.0.service"   # Bước 3: systemctl status <service>
+    has_docker: false
+    hosts:
+      - name: "WSO2APIM-1"
+        ip: "10.1.16.11"
+        ssh:
+          username: "root"
+
+  - name: "Application Server"
+    service: "ngs-simo_simo-restapi"
+    service_type: "docker"            # service chạy bằng Docker Swarm, không phải systemd
+    has_docker: true                  # Bước 3b: kiểm tra toàn bộ container và replica
+    hosts:
+      - name: "SIMO-BE-1"
+        ip: "10.1.46.41"
+      - name: "SIMO-FE-1"
+        ip: "10.1.46.42"
+        service: ""                   # ghi đè ở host: bỏ Bước 3 trên node này
 ```
+
+**Các khoá:**
+- `service`: tên service kiểm tra ở Bước 3. Để trống thì bỏ Bước 3.
+- `service_type`: `systemd` (mặc định) chạy `systemctl status`; `docker` kiểm tra Docker Swarm service – trên Swarm manager so số replica (0/N → CRITICAL, thiếu → WARNING), trên node worker kiểm tra container của service đang chạy trên node; `process` dành cho ứng dụng không chạy bằng systemd (vd. WSO2 MI khởi động bằng script) – có tiến trình mà dòng lệnh chứa giá trị `service` thì OK, không có thì CRITICAL.
+- `process_pattern` (tuỳ chọn): chuỗi cần tìm trong dòng lệnh tiến trình khi unit systemd ở trạng thái `active (exited)`; mặc định là tên service bỏ `.service`.
+- `service`, `service_type` khai báo trong từng host sẽ ghi đè giá trị của ứng dụng.
+- `has_docker`: thêm Bước 3b – mọi container phải ở trạng thái Up, Swarm service phải đủ replica.
+- Nếu Bước 3 báo "Không tìm thấy service ... trên host", tên service trong config không đúng. Báo cáo liệt kê các unit có tên gần giống; có thể xem thêm bằng `systemctl list-unit-files --type=service | grep -i <từ khoá>`.
+- Unit ở trạng thái `active (exited)` (unit chỉ chạy script khởi động rồi thoát): hệ thống tìm tiến trình chứa `process_pattern` (mặc định tên service bỏ `.service`) trong `ps -eo pid,args`; có thì OK, không thì WARNING.
+- Với `service_type: docker`, node worker không chạy container nào của service vẫn là OK (Swarm tự phân bổ replica); số replica được kiểm tra trên node manager, nên cần có ít nhất 1 node manager trong danh sách host.
 
 ### Best Practices cấu hình
 

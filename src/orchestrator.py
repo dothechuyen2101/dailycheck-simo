@@ -18,6 +18,7 @@ import src.checks.oracle_checks as oracle_checks
 import src.checks.mongo_checks as mongo_checks
 import src.checks.hadoop_checks as hadoop_checks
 import src.checks.app_checks as app_checks
+from src import timeutil
 
 logger = logging.getLogger("dailycheck.orchestrator")
 
@@ -32,7 +33,7 @@ def _overall_status(results: List[CheckResult]) -> str:
 
 
 def _new_run_id() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    return timeutil.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
 
 
 def _finalize_run(summary: RunSummary, all_results: List[CheckResult], recipients: list[str] | None = None) -> RunSummary:
@@ -41,7 +42,7 @@ def _finalize_run(summary: RunSummary, all_results: List[CheckResult], recipient
     for r in all_results:
         store.save_result(summary.run_id, r)
 
-    finished_at = datetime.now().isoformat()
+    finished_at = timeutil.now().isoformat()
     ok_count = sum(1 for r in all_results if r.status == "OK")
     warning_count = sum(1 for r in all_results if r.status == "WARNING")
     critical_count = sum(1 for r in all_results if r.status == "CRITICAL")
@@ -79,7 +80,7 @@ def run_daily_check() -> RunSummary:
     Trả về RunSummary với đầy đủ kết quả.
     """
     run_id = _new_run_id()
-    started_at = datetime.now().isoformat()
+    started_at = timeutil.now().isoformat()
     logger.info(f"=== SIMO Daily Check bắt đầu – Run ID: {run_id} ===")
 
     store = ResultStore()
@@ -115,7 +116,7 @@ def run_dynamic_module(module_id: int) -> RunSummary:
     module_store = DynamicModuleStore()
     module = module_store.get_module(module_id)
     run_id = _new_run_id()
-    started_at = datetime.now().isoformat()
+    started_at = timeutil.now().isoformat()
     logger.info("=== Dynamic module bắt đầu – Module: %s | Run ID: %s ===", module.name, run_id)
 
     summary = RunSummary(

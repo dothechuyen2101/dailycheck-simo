@@ -4,7 +4,6 @@ Hỗ trợ trigger thủ công qua API.
 """
 import logging
 import threading
-from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -12,6 +11,7 @@ from apscheduler.triggers.cron import CronTrigger
 from src.config_manager import get
 from src.dynamic_modules import DynamicModuleStore
 from src.orchestrator import run_daily_check, run_dynamic_module
+from src import timeutil
 
 logger = logging.getLogger("dailycheck.scheduler")
 
@@ -122,7 +122,7 @@ def trigger_now() -> str:
     """Trigger chạy Daily Check ngay lập tức (dùng cho manual trigger hoặc test)."""
     t = threading.Thread(target=_job_wrapper, name="ManualDailyCheck", daemon=True)
     t.start()
-    return f"Daily Check được trigger lúc {datetime.now().isoformat()}"
+    return f"Daily Check được trigger lúc {timeutil.now().isoformat()}"
 
 
 def trigger_dynamic_module_now(module_id: int) -> str:
@@ -133,7 +133,7 @@ def trigger_dynamic_module_now(module_id: int) -> str:
         daemon=True,
     )
     t.start()
-    return f"Dynamic module {module_id} được trigger lúc {datetime.now().isoformat()}"
+    return f"Dynamic module {module_id} được trigger lúc {timeutil.now().isoformat()}"
 
 
 def is_running() -> bool:
