@@ -6,9 +6,11 @@ LABEL description="SIMO Automated Daily Check System"
 WORKDIR /app
 
 # Cài dependencies hệ thống (cho paramiko)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# tzdata: để TZ=Asia/Ho_Chi_Minh có hiệu lực, nếu thiếu thì giờ trong báo cáo là UTC
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     openssh-client \
     fonts-dejavu-core \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Cài Python packages

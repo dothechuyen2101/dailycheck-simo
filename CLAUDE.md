@@ -40,9 +40,22 @@ The root-level `verify_validation.py` and `test_edge_cases.py` are ad-hoc script
 
 **Built-in check modules** (`src/checks/*_checks.py`) all follow the same pattern:
 - A module-level `SYSTEM` name and `_ok/_warn/_crit/_err` helpers that build `CheckResult`.
-- One `check_*` function per numbered step (step names like `"Bước 2 – Phân vùng đĩa"`).
-- A `run_all()` that iterates the hosts in the config section, opens an SSH connection with `ssh_manager.ssh_connect(host_cfg)`, and runs the steps.
-- Every check parses shell output (`df`, `crs_stat`, `systemctl`, `docker ps`, etc.). Oracle SQL checks pipe SQL into `sqlplus -S / as sysdba` over SSH; `cx_Oracle`/`oracledb` isn't used. Thresholds come from the `thresholds.*` config keys, with hardcoded defaults.
+- One `check_*(client, host_name, commands, ctx)` function per numbered step. `app_checks` also takes `system` first.
+- A step list of `(step_key, fn)` pairs, and a `run_all(commands=None)` that iterates the hosts in the config section, skips disabled steps, opens an SSH connection with `ssh_manager.ssh_connect(host_cfg)`, and runs the steps.
+- Every check parses shell output (`df`, `crsctl stat res -t`, `systemctl`, `docker ps`, etc.). `src/checks/common.py` holds the shared date/hostname, disk and systemctl checks. Thresholds come from the `thresholds.*` config keys, with hardcoded defaults.
+- The Oracle hosts are AIX (ksh; error text like "A file or directory in the path name does not exist."), SSH user is root, Oracle/Grid 19.3. Parsers must not assume Linux output: `parse_df_issues()` locates the `%Used`/`Use%`/`Capacity` and `Mounted on` columns from the header (AIX `df -k` has `%Iused` as the second-to-last column), and `parse_crs_issues()` reads both `crsctl stat res -t` (Server column located from the header, since State details contains spaces) and the 11g `crs_stat -t` table; an instance with no server is ignored when the resource is already ONLINE on every node (Flex ASM cardinality 3 on a 2-node cluster).
+- Oracle SQL checks run `su - {{oracle_user}} -c "export ORACLE_HOME={{oracle_home}} ORACLE_SID=...; {{oracle_home}}/bin/sqlplus -S / as sysdba"` with the SQL sent on stdin (`SSHClient.run(..., input=...)`); `cx_Oracle`/`oracledb` isn't used. ORA-/SP2- output or a non-zero exit gives ERROR. Grid tools use `{{grid_home}}/bin/...`.
+- `grid_home`/`oracle_home`/`oracle_user` come from config (host > `oracle.*`); otherwise `resolve_environment()` runs the `oracle.environment` step (`ps -eo user,args`, `cat /etc/oratab`, then `crsctl stat res -p` when there is no oratab – the case on the AIX DB hosts) on the node that runs steps 3–11; `parse_oracle_environment()` / `parse_crs_database_resources()` extract them (a host can run several databases, e.g. simo1 and mid1). There is no hardcoded path default: a variable that is still empty makes `BuiltinCommandSet.run()` fail with a hint (`VARIABLE_HINTS`) instead of running a broken command.
+- Applications: `service_type: systemd` (default) runs `systemctl status`; `service_type: docker` checks a Docker Swarm service (`application.docker_service`; on a worker node, no local container is OK because replicas are checked on the manager); `service_type: process` looks for a process whose command line contains `service` (`application.process`, used for WSO2 MI which has no systemd unit). `service`/`service_type` can be overridden per host. A systemd unit that does not exist gives ERROR listing similar unit names; `active (exited)` is resolved by looking for a process whose command line contains `process_pattern` (default: the unit name without `.service`).
+
+**Built-in commands** (`src/builtin_commands.py`):
+- The checks never hardcode commands. They call `commands.run(client, step_key, cmd_key, ctx)` on a `BuiltinCommandSet`.
+- `BUILTIN_STEPS` holds the defaults: each step has a key (`oracle.disk_space`), its display name, one or more commands (command template, optional stdin script, timeout) and an `output_hint`.
+- The dashboard page `/commands` stores overrides (command/script/timeout/enabled) in the SQLite table `builtin_step_overrides`. Only values that differ from the default are stored.
+- `run_daily_check()` loads one snapshot with `BuiltinCommandStore().load_command_set()` and passes it to every module's `run_all()`.
+- Commands are rendered with `dynamic_modules.render_command_template(..., allow_su=True)`: the same validation as dynamic modules except that `su` is allowed (needed for `su - oracle`; dynamic modules still reject it). Only the variables used in the template are sanitized. Allowed variables are listed per system in `SYSTEM_VARIABLES`, plus per-command `extra_vars`.
+- Changing a default in `BUILTIN_STEPS` does not affect steps that already have an override stored on the server; those keep the old command until "Khôi phục mặc định".
+- Adding a new built-in step means adding a `BuiltinStepDef` and wiring its `check_*` function into the module's step list.
 
 **Persistence** (`src/logger.py`, which also holds `CheckResult`, `RunSummary`, `ResultStore` and `setup_logging`):
 - SQLite at `data/dailycheck.db`, with tables `check_runs`, `check_results` and `alert_history`.
@@ -66,6 +79,8 @@ The root-level `verify_validation.py` and `test_edge_cases.py` are ad-hoc script
 - `general.prep_time` is mentioned in the docs but is not implemented.
 
 **Alerts** (`src/alert_manager.py`): per-result real-time alerts are disabled (`alert()` only logs). Notification is one consolidated HTML report per run. `send_report()` sends it only by email, and only if `notifications.email.enabled` is set. `_send_webhook()` exists but nothing calls it for reports. Dynamic modules send to their own `recipient_emails`.
+
+**Time**: use `src.timeutil.now()` instead of `datetime.now()`. It returns naive local time in `general.timezone` (via `zoneinfo` + the `tzdata` pip package), so timestamps are correct even when the container or server runs in UTC.
 
 **Dashboard** (`dashboard/app.py`):
 - A single-file Flask app with Jinja templates in `dashboard/templates/` and vendored Bootstrap in `static/`.

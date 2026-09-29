@@ -3,15 +3,16 @@ Flask Dashboard – Hiển thị kết quả Daily Check theo thời gian thực
 """
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, render_template, jsonify, request, abort, send_file
 
+from src.builtin_commands import BuiltinCommandStore, SYSTEM_LABELS
 from src.config_manager import get, load_config
 from src.dynamic_modules import DynamicModuleStore, get_module_templates, build_module_from_template
 from src.logger import ResultStore
 from src import scheduler as sched_module
+from src import timeutil
 
 load_config()
 
@@ -28,6 +29,7 @@ app.secret_key = get("dashboard.secret_key", "dev-secret-key")
 logger = logging.getLogger("dailycheck.dashboard")
 store = ResultStore()
 module_store = DynamicModuleStore()
+builtin_store = BuiltinCommandStore()
 
 STATUS_COLOR = {
     "OK": "success",
@@ -60,7 +62,7 @@ def index():
         latest_results=latest_results,
         modules=modules,
         status_color=STATUS_COLOR,
-        now=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        now=timeutil.now().strftime("%d/%m/%Y %H:%M:%S"),
         is_running=sched_module.is_running(),
     )
 
@@ -78,7 +80,7 @@ def run_detail(run_id: str):
         run_info=run_info,
         systems=systems,
         status_color=STATUS_COLOR,
-        now=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        now=timeutil.now().strftime("%d/%m/%Y %H:%M:%S"),
     )
 
 
@@ -153,7 +155,7 @@ def modules_index():
         "modules.html",
         modules=_filter_module_cards(_module_cards(), query),
         search_query=query,
-        now=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        now=timeutil.now().strftime("%d/%m/%Y %H:%M:%S"),
     )
 
 
@@ -165,7 +167,7 @@ def modules_new():
         module_templates=json.dumps(get_module_templates()),
         module=None,
         module_runs=[],
-        now=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        now=timeutil.now().strftime("%d/%m/%Y %H:%M:%S"),
         default_timezone=get("general.timezone", "Asia/Ho_Chi_Minh"),
     )
 
@@ -182,9 +184,43 @@ def modules_edit(module_id: int):
         module_json=json.dumps(_module_to_dict(module)),
         module_templates=json.dumps(get_module_templates()),
         module_runs=module_store.get_module_runs(module_id),
-        now=datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        now=timeutil.now().strftime("%d/%m/%Y %H:%M:%S"),
         default_timezone=get("general.timezone", "Asia/Ho_Chi_Minh"),
     )
+
+
+@app.route("/commands")
+def builtin_commands_page():
+    return render_template(
+        "builtin_commands.html",
+        steps=builtin_store.list_steps(),
+        system_labels=SYSTEM_LABELS,
+        now=timeutil.now().strftime("%d/%m/%Y %H:%M:%S"),
+    )
+
+
+@app.route("/api/builtin-commands", methods=["GET"])
+def api_builtin_commands():
+    return jsonify(builtin_store.list_steps())
+
+
+@app.route("/api/builtin-commands/<step_key>", methods=["PUT"])
+def api_builtin_command_update(step_key: str):
+    payload = request.get_json(force=True, silent=True)
+    try:
+        return jsonify(builtin_store.save_override(step_key, payload))
+    except KeyError:
+        abort(404)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/builtin-commands/<step_key>", methods=["DELETE"])
+def api_builtin_command_reset(step_key: str):
+    try:
+        return jsonify(builtin_store.reset(step_key))
+    except KeyError:
+        abort(404)
 
 
 @app.route("/api/trigger", methods=["POST"])
@@ -281,7 +317,7 @@ def api_status():
     return jsonify({
         "is_running": sched_module.is_running(),
         "latest_run": latest,
-        "server_time": datetime.now().isoformat(),
+        "server_time": timeutil.now().isoformat(),
     })
 
 

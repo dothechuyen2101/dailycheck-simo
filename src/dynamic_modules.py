@@ -609,18 +609,23 @@ def _sanitize_value(value: str) -> str:
     return sanitized
 
 
-def _validate_command_template(command: str) -> None:
-    """Validate command template for dangerous patterns."""
+def _validate_command_template(command: str, allow_su: bool = False) -> None:
+    """Validate command template for dangerous patterns.
+
+    allow_su is only used for built-in commands, which run as root and need
+    `su - oracle -c ...` to get the Oracle environment.
+    """
 
     dangerous_patterns = [
         (r"\$\(", "command substitution '$(' is not allowed"),
         (r"`", "backtick command substitution is not allowed"),
         (r"[\r\n\x00]", "control characters are not allowed"),
         (r"(?<!\S)sudo(?=\s|$)", "sudo is not allowed in dynamic module commands"),
-        (r"(?<!\S)su(?=\s|$)", "su is not allowed in dynamic module commands"),
         (r"(?<!\S)rm\s+-rf\s+/(?:\s|$)", "destructive root deletion is not allowed"),
         (r">\s*/dev/(?!null\b)", "redirecting output to device files is not allowed"),
     ]
+    if not allow_su:
+        dangerous_patterns.append((r"(?<!\S)su(?=\s|$)", "su is not allowed in dynamic module commands"))
 
     for pattern, message in dangerous_patterns:
         if re.search(pattern, command, re.IGNORECASE):
@@ -645,9 +650,6 @@ def _validate_and_sanitize_context(context: dict) -> dict:
 
 def _render_command(command: str, module: DynamicModule, host: DynamicModuleHost) -> str:
     """Render command template with validated and sanitized variables."""
-    # Validate the command template first
-    _validate_command_template(command)
-    
     # Build context with built-in variables
     context = {
         "host_name": host.name,
@@ -655,10 +657,18 @@ def _render_command(command: str, module: DynamicModule, host: DynamicModuleHost
         "module_name": module.name,
         "system_name": module.system_name,
     }
-    
+
     # Add host variables (convert all to strings)
     context.update({str(key): str(value) for key, value in host.variables.items()})
-    
+
+    return render_command_template(command, context)
+
+
+def render_command_template(command: str, context: dict, allow_su: bool = False) -> str:
+    """Render a {{var}} command template; validates the template, the values and the result."""
+    # Validate the command template first
+    _validate_command_template(command, allow_su=allow_su)
+
     # Validate and sanitize all context values
     sanitized_context = _validate_and_sanitize_context(context)
     
@@ -673,7 +683,7 @@ def _render_command(command: str, module: DynamicModule, host: DynamicModuleHost
     rendered = TEMPLATE_VAR_RE.sub(replace_var, command)
     
     # Final validation of the rendered command
-    _validate_command_template(rendered)
+    _validate_command_template(rendered, allow_su=allow_su)
     
     return rendered
 

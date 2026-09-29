@@ -1,0 +1,8 @@
+# ps -eo user,args | grep -E "ocssd.bin|ora_pmon" | grep -v grep
+  oracle ora_pmon_simo1
+    grid /u01/app/19c/grid/bin/ocssd.bin
+  oracle ora_pmon_mid1
+# grep -v "^#" /etc/oratab
+grep: 0652-033 Cannot open /etc/or.
+grep: 0652-033 Cannot opeatab.
+#

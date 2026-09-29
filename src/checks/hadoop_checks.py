@@ -3,8 +3,10 @@ Hadoop Check Module – 3 bước kiểm tra Hadoop Cluster.
 """
 import logging
 import re
-from typing import List
+from typing import List, Optional
 
+from src.builtin_commands import BuiltinCommandSet, BuiltinCommandStore, step_name
+from src.checks.common import disk_space_check, system_info_check
 from src.config_manager import get
 from src.logger import CheckResult
 from src.ssh_manager import ssh_connect
@@ -27,48 +29,22 @@ def _err(host, name, msg):
     return CheckResult(SYSTEM, host, name, "ERROR", msg)
 
 
-def check_system_info(client, host_name: str) -> CheckResult:
-    name = "Bước 1 – Thông số hệ thống"
-    r_date = client.run("date")
-    r_host = client.run("hostname")
-    if not r_date.success or not r_host.success:
-        return _err(host_name, name, "Không lấy được date/hostname")
-    return _ok(host_name, name,
-               f"date={r_date.stdout.strip()} | hostname={r_host.stdout.strip()}",
-               raw=f"date: {r_date.stdout}\nhostname: {r_host.stdout}")
+def check_system_info(client, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
+    key = "hadoop.system_info"
+    return CheckResult(SYSTEM, host_name, step_name(key), *system_info_check(client, commands, key, ctx))
 
 
-def check_disk_space(client, host_name: str) -> CheckResult:
-    name = "Bước 2 – Phân vùng đĩa"
-    threshold = get("thresholds.disk_usage_max_pct", 90)
-    res = client.run("df -T")
-    if not res.success:
-        return _err(host_name, name, f"df -T thất bại: {res.stderr}")
-    issues = []
-    for line in res.stdout.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) < 6:
-            continue
-        mount = parts[5]
-        if mount.lower() in ("/cdrom", "/cdroom"):
-            continue
-        pct_str = parts[4].replace("%", "")
-        try:
-            pct = int(pct_str)
-        except ValueError:
-            continue
-        if pct >= threshold:
-            issues.append(f"{mount} ({pct}%)")
-    if issues:
-        return _crit(host_name, name,
-                     f"Phân vùng vượt {threshold}%: {', '.join(issues)}",
-                     raw=res.stdout, details={"overloaded": issues})
-    return _ok(host_name, name, f"Tất cả phân vùng < {threshold}%", raw=res.stdout)
+def check_disk_space(client, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
+    key = "hadoop.disk_space"
+    return CheckResult(SYSTEM, host_name, step_name(key), *disk_space_check(client, commands, key, ctx))
 
 
-def check_hdfs_report(client, host_name: str) -> CheckResult:
-    name = "Bước 3 – HDFS dfsadmin report"
-    res = client.run("hdfs dfsadmin -report", timeout=60)
+def check_hdfs_report(client, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
+    key = "hadoop.hdfs_report"
+    name = step_name(key)
+    res = commands.run(client, key, "main", ctx)
+    if not res.success and not res.stdout:
+        return _err(host_name, name, f"{res.command} thất bại: {res.stderr[:200]}")
     output = res.stdout + res.stderr
 
     # Kiểm tra Safe Mode
@@ -106,8 +82,20 @@ def check_hdfs_report(client, host_name: str) -> CheckResult:
                raw=output, details={"live": live_count, "dfs_used_pct": used_pct})
 
 
-def run_all(alert_manager=None) -> List[CheckResult]:
+# Bước 1 & 2 chạy trên mọi node; HDFS report chỉ chạy trên namenode
+ALL_NODE_STEPS = [
+    ("hadoop.system_info", check_system_info),
+    ("hadoop.disk_space", check_disk_space),
+]
+NAMENODE_STEPS = [
+    ("hadoop.hdfs_report", check_hdfs_report),
+]
+
+
+def run_all(commands: Optional[BuiltinCommandSet] = None) -> List[CheckResult]:
     """Chạy 3 bước kiểm tra Hadoop trên tất cả node; HDFS report từ namenode."""
+    if commands is None:
+        commands = BuiltinCommandStore().load_command_set()
     cfg = get("hadoop", {})
     nodes = cfg.get("nodes", [])
     namenode_ip = cfg.get("namenode_ip", "")
@@ -115,14 +103,17 @@ def run_all(alert_manager=None) -> List[CheckResult]:
 
     for node_cfg in nodes:
         host_name = node_cfg.get("name", node_cfg["ip"])
+        is_namenode = node_cfg["ip"] == namenode_ip or namenode_ip == ""
+        steps = ALL_NODE_STEPS + (NAMENODE_STEPS if is_namenode else [])
+        steps = [fn for key, fn in steps if commands.is_enabled(key)]
+        if not steps:
+            continue
+        ctx = {"host_name": host_name, "host_ip": node_cfg["ip"]}
         logger.info(f"Hadoop: kết nối {host_name}")
         try:
             with ssh_connect(node_cfg) as client:
-                results.append(check_system_info(client, host_name))
-                results.append(check_disk_space(client, host_name))
-                # HDFS report chỉ chạy trên namenode
-                if node_cfg["ip"] == namenode_ip or namenode_ip == "":
-                    results.append(check_hdfs_report(client, host_name))
+                for fn in steps:
+                    results.append(fn(client, host_name, commands, ctx))
         except ConnectionError as e:
             results.append(_err(host_name, "Kết nối SSH", str(e)))
         except Exception as e:

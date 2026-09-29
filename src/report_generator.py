@@ -1,9 +1,9 @@
 """
 Report Generator – Tạo báo cáo HTML gửi email mỗi sáng.
 """
-from datetime import datetime
 from typing import List
 from src.logger import CheckResult, RunSummary
+from src import timeutil
 
 
 STATUS_COLOR = {
@@ -23,7 +23,7 @@ STATUS_LABEL = {
 
 def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str:
     """Tạo báo cáo HTML đầy đủ."""
-    date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    date_str = timeutil.now().strftime("%d/%m/%Y %H:%M")
     overall_color = STATUS_COLOR.get(summary.overall_status, "#6c757d")
     overall_label = STATUS_LABEL.get(summary.overall_status, summary.overall_status)
     issue_results = [r for r in results if r.status != "OK"]
@@ -183,7 +183,7 @@ def generate_html_report(summary: RunSummary, results: List[CheckResult]) -> str
 
 def generate_subject(summary: RunSummary) -> str:
     label = STATUS_LABEL.get(summary.overall_status, summary.overall_status)
-    date_str = datetime.now().strftime("%d/%m/%Y")
+    date_str = timeutil.now().strftime("%d/%m/%Y")
     if summary.run_type == "dynamic_module" and summary.module_name:
         return f"[SIMO Dynamic Module] {summary.module_name} – {label} – {date_str}"
     return f"[SIMO DailyCheck] {label} – Báo cáo kiểm tra đầu ngày {date_str}"
