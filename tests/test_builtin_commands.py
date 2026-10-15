@@ -320,8 +320,8 @@ class BuiltinCommandTests(unittest.TestCase):
 
     def test_alert_log_unreadable_is_error(self):
         def responder(command, stdin):
-            if stdin and "background_dump_dest" in stdin:
-                return ("background_dump_dest string /u01/diag/rdbms/simo/simo1/trace", "", 0)
+            if stdin and "v$diag_info" in stdin:
+                return ("/u01/diag/rdbms/simo/simo1/trace", "", 0)
             return ("", "tail: cannot open '/u01/diag/rdbms/simo/simo1/trace/alert_simo1.log'", 1)
 
         client = FakeClient(responder)
@@ -630,6 +630,172 @@ USR_ORA_INST_NAME@SERVERNAME(simo-db02)=simo2
         self.assertIn("1/1 voting disk ONLINE (yêu cầu 3)", result.message)
         self.assertIn("EXTERNAL redundancy", result.message)
 
+    def test_tablespace_uses_autoextend_max_size(self):
+        from src.builtin_commands import TABLESPACE_SQL
+
+        self.assertIn("autoextensible = 'YES' AND maxbytes > bytes THEN maxbytes ELSE bytes END", TABLESPACE_SQL)
+        self.assertIn("NVL(fs.free_bytes, 0)", TABLESPACE_SQL)
+        self.assertEqual(TABLESPACE_SQL.count("COUNT(*)"), 2)
+        self.assertIn("FROM gv$temp_extent_pool", TABLESPACE_SQL)
+        # SIMO_MASTER: cấp phát 32GB đã dùng gần hết nhưng còn tự mở rộng tới 320GB → không báo
+        output = (
+            "Tablespace Name                Max MBytes Used MBytes Free MBytes  % Free Alloc MBytes\n"
+            "------------------------------ ---------- ----------- ----------- ------- ------------\n"
+            "SIMO_MASTER                        327680       29200      298480   91.09        32768\n"
+            "SIMO_MASTER_IDX                     32768       30050        2718    8.29        32768\n"
+            "UNDOTBS1                            32768         100       32668   99.69          300\n"
+        )
+        client = FakeClient(lambda command, stdin: (output, "", 0))
+        result = oracle_checks.check_free_tablespace(client, "DB1", BuiltinCommandSet(), ORACLE_CTX)
+        self.assertEqual(result.status, "CRITICAL")
+        self.assertEqual(result.details["issues"], ["SIMO_MASTER_IDX: %Free=8.3% < 15%"])
+
+    DBA_COLUMNS = [("TABLESPACE_NAME", 30, "l"), ("TYPE", 10, "l"), ("FILES", 16, "r"), ("ALLOCATED_GB", 16, "r"),
+                   ("USED_GB", 16, "r"), ("CURRENT_FREE_GB", 16, "r"), ("MAX_SIZE_GB", 16, "r"),
+                   ("MAX_FREE_GB", 16, "r"), ("USED_MAX_PCT", 16, "r"), ("FREE_MAX_PCT", 16, "r")]
+    DBA_ROWS = [
+        ("SIMO_MASTER_IDX", "PERMANENT", 1, 30.84, 28.28, 2.56, 32, 3.72, 88.38, 11.62),
+        ("SIMO_MASTER", "PERMANENT", 10, 296, 263.74, 32.26, 320, 56.26, 82.42, 17.58),
+        ("SYSAUX", "PERMANENT", 1, 7.56, 7.11, .45, 32, 24.89, 22.23, 77.77),
+        ("TEMP", "TEMPORARY", 1, 20, 4, 16, 32, 28, 12.5, 87.5),
+        ("UNDOTBS1", "UNDO", 1, 24.14, 1.8, 22.34, 32, 30.2, 5.63, 94.37),
+    ]
+
+    def _sqlplus(self, columns, rows, width=None):
+        """Dựng output giống SQL*Plus: tiêu đề cắt theo độ rộng cột, chữ canh trái, số canh phải."""
+        def fmt_group(values, group):
+            cells = []
+            for value, k in zip(values, group):
+                _, w, align = columns[k]
+                text = str(value)[:w] if align == "l" else str(value)
+                cells.append(text.ljust(w) if align == "l" else text.rjust(w))
+            return " ".join(cells).rstrip()
+        # LINESIZE nhỏ: SQL*Plus chia các cột thành nhiều nhóm, mỗi bản ghi in thành nhiều dòng
+        groups, current, used = [], [], 0
+        for idx, (_, w, _) in enumerate(columns):
+            if current and width and used + 1 + w > width:
+                groups.append(current)
+                current, used = [], 0
+            current.append(idx)
+            used += w + (1 if used else 0)
+        groups.append(current)
+
+        def pick(values, group):
+            return [values[k] for k in group]
+
+        headers = [h[:w] for h, w, _ in columns]
+        lines = []
+        for group in groups:
+            lines.append(fmt_group(pick(headers, group), group))
+            lines.append(" ".join("-" * columns[k][1] for k in group))
+        for row in rows:
+            lines += [fmt_group(pick(list(row), group), group) for group in groups]
+        return "[YOU HAVE NEW MAIL]\n\n" + "\n".join(lines) + "\n"
+
+    def _tablespace(self, output):
+        client = FakeClient(lambda command, stdin: (output, "", 0))
+        return oracle_checks.check_free_tablespace(client, "DB1", BuiltinCommandSet(), ORACLE_CTX)
+
+    def test_tablespace_reads_dba_sql_by_column_name(self):
+        result = self._tablespace(self._sqlplus(self.DBA_COLUMNS, self.DBA_ROWS))
+        self.assertEqual(result.status, "CRITICAL")
+        # UNDO chỉ kiểm tra dung lượng (32GB ≥ 400MB), TEMP 87.5% free → không báo
+        self.assertEqual(result.details["issues"], ["SIMO_MASTER_IDX: %Free=11.6% < 15%"])
+
+    def test_tablespace_reads_output_with_tabs(self):
+        # SQL*Plus trên AIX mặc định SET TAB ON: khoảng trắng chạm mốc 8 ký tự bị thay bằng TAB
+        def tabify(line):
+            out, i = [], 0
+            while i < len(line):
+                if line[i] != " ":
+                    out.append(line[i])
+                    i += 1
+                    continue
+                j = i
+                while j < len(line) and line[j] == " ":
+                    j += 1
+                pos = i
+                while (pos // 8 + 1) * 8 <= j and j - pos > 1:
+                    out.append("\t")
+                    pos = (pos // 8 + 1) * 8
+                out.append(" " * (j - pos))
+                i = j
+            return "".join(out)
+
+        output = "\n".join(tabify(line) for line in self._sqlplus(self.DBA_COLUMNS, self.DBA_ROWS).splitlines())
+        self.assertIn("\t", output)
+        result = self._tablespace(output)
+        self.assertEqual(result.status, "CRITICAL")
+        self.assertEqual(result.details["issues"], ["SIMO_MASTER_IDX: %Free=11.6% < 15%"])
+
+    def test_tablespace_reads_truncated_headings(self):
+        # Không SET NUMWIDTH: cột số rộng 10, tiêu đề bị cắt (FREE_MAX_P, MAX_SIZE_G...)
+        columns = [(h, 10 if a == "r" else w, a) for h, w, a in self.DBA_COLUMNS]
+        rows = [r for r in self.DBA_ROWS if r[0] != "SIMO_MASTER_IDX"]
+        result = self._tablespace(self._sqlplus(columns, rows))
+        self.assertEqual(result.status, "OK")
+        self.assertEqual(result.message, "Tất cả 4 tablespace đều đạt ngưỡng")
+
+    def test_tablespace_unparseable_output_is_error_not_ok(self):
+        # SQL của DBA chạy không có SET LINESIZE (80): mỗi bản ghi bị chia thành 2 dòng
+        columns = [(h, 10 if a == "r" else w, a) for h, w, a in self.DBA_COLUMNS]
+        output = self._sqlplus(columns, self.DBA_ROWS, width=80)
+        self.assertIn("\nCURRENT_FR MAX_SIZE_G MAX_FREE_G USED_MAX_P FREE_MAX_P\n", output)
+        result = self._tablespace(output)
+        self.assertEqual(result.status, "ERROR")
+        self.assertIn("Không đọc được dữ liệu tablespace", result.message)
+
+    def test_invalid_objects_join_wrapped_lines(self):
+        # Output thật từ DB1 (LINESIZE 80): tên procedure dài bị ngắt giữa chừng
+        output = (
+            "[YOU HAVE NEW MAIL]\n"
+            "\n"
+            "'ALTER'||OBJECT_TYPE||''||OWNER||'.'||OBJECT_NAME||'COMPILE;'\n"
+            "--------------------------------------------------------------------------------\n"
+            "ALTER PROCEDURE SIMO_MASTER.CREATE_FAKE_DATA COMPILE;\n"
+            "ALTER PROCEDURE SIMO_MASTER.GENERATE_LARGE_FAKE_ACCOUNT_DATA_TO_DM_TKTT_HUNG_TES\n"
+            "T COMPILE;\n"
+            "\n"
+            "ALTER PROCEDURE SIMO_MASTER.SIMOUAT_TO_NAPAS COMPILE;\n"
+            "ALTER PROCEDURE SIMO_MASTER.TERMINATE_WAITING_SESSION COMPILE;\n"
+        )
+        client = FakeClient(lambda command, stdin: (output, "", 0))
+        result = oracle_checks.check_invalid_objects(client, "DB1", BuiltinCommandSet(), ORACLE_CTX)
+        self.assertEqual(result.details["count"], 4)
+        self.assertIn("PROCEDURE SIMO_MASTER.GENERATE_LARGE_FAKE_ACCOUNT_DATA_TO_DM_TKTT_HUNG_TEST",
+                      result.details["objects"])
+
+    def test_parse_alert_dir(self):
+        self.assertEqual(oracle_checks.parse_alert_dir("/u01/app/oracle/diag/rdbms/simo/simo1/trace\n"),
+                         "/u01/app/oracle/diag/rdbms/simo/simo1/trace")
+        # show parameter: SQL*Plus ngắt cột VALUE sau 30 ký tự
+        wrapped = (
+            "NAME                                 TYPE        VALUE\n"
+            "------------------------------------ ----------- ------------------------------\n"
+            "background_dump_dest                 string      /u01/app/oracle/product/19c/db\n"
+            "                                                 home_1/rdbms/log\n"
+        )
+        self.assertEqual(oracle_checks.parse_alert_dir(wrapped), "/u01/app/oracle/product/19c/dbhome_1/rdbms/log")
+        self.assertIsNone(oracle_checks.parse_alert_dir("ORA-00942: table or view does not exist"))
+
+    def test_invalid_objects_ignore_sqlplus_heading(self):
+        output = (
+            "'ALTER'||OBJECT_TYPE||''||OWNER||'.'||OBJECT_NAME||'COMPILE;'\n"
+            "--------------------------------------------------------------\n"
+            "ALTER PACKAGE SIMO_MASTER.PKG_REPORT COMPILE;\n"
+            "ALTER VIEW SIMO_MASTER.V_SUMMARY COMPILE;\n"
+            "\n"
+            "'ALTER'||OBJECT_TYPE||''||OWNER||'.'||OBJECT_NAME||'COMPILE;'\n"
+            "--------------------------------------------------------------\n"
+            "ALTER SYNONYM APP.S_ORDERS COMPILE;\n"
+        )
+        client = FakeClient(lambda command, stdin: (output, "", 0))
+        result = oracle_checks.check_invalid_objects(client, "DB1", BuiltinCommandSet(), ORACLE_CTX)
+        self.assertEqual(result.status, "WARNING")
+        self.assertEqual(result.details["count"], 3)
+        self.assertEqual(result.message, "Phát hiện 3 invalid object cần compile: "
+                                         "PACKAGE SIMO_MASTER.PKG_REPORT, VIEW SIMO_MASTER.V_SUMMARY, SYNONYM APP.S_ORDERS")
+
     def test_crs_error_shows_main_and_fallback(self):
         client = FakeClient(lambda command, stdin: ("", f"ksh: {command.split()[0]}: not found.", 127))
         result = oracle_checks.check_crs_status(client, "DB1", BuiltinCommandSet(), ORACLE_CTX)
@@ -750,6 +916,49 @@ class ServiceCheckTests(unittest.TestCase):
 
         result = app_checks.check_process_service(
             FakeClient(lambda c, i: ("  PID COMMAND\n    1 /sbin/init\n", "", 0)), "EI", "ei1", BuiltinCommandSet(), ctx)
+        self.assertEqual(result.status, "CRITICAL")
+
+    def _docker_containers(self, task_state):
+        def responder(command, stdin):
+            if command.startswith("docker ps"):
+                return "web\tUp 2 hours", "", 0
+            if command.startswith("docker service ls"):
+                return "ngs-simo_simo-restapi-1\t4/4\nngs-simo_simo-job\t0/1", "", 0
+            if command.startswith("docker service ps ngs-simo_simo-job"):
+                return task_state, "", 0
+            return "", "", 0
+
+        client = FakeClient(responder)
+        result = app_checks.check_docker_containers(client, "App", "be1", BuiltinCommandSet(), self.APP_CTX)
+        return client, result
+
+    def test_completed_swarm_job_is_not_a_warning(self):
+        client, result = self._docker_containers("Complete 2 weeks ago\t\nComplete 3 weeks ago\t")
+        self.assertEqual(result.status, "OK")
+        self.assertIn("service dạng job đã chạy xong: ngs-simo_simo-job (Complete 2 weeks ago)", result.message)
+        self.assertIn(
+            "docker service ps ngs-simo_simo-job --no-trunc --format '{{.CurrentState}}\\t{{.Error}}'",
+            [c[0] for c in client.calls],
+        )
+
+    def test_failed_swarm_task_is_reported(self):
+        _, result = self._docker_containers("Failed 3 hours ago\ttask: non-zero exit (1)")
+        self.assertEqual(result.status, "WARNING")
+        self.assertEqual(result.details["issues"],
+                         ["ngs-simo_simo-job: 0/1 – task: Failed 3 hours ago (task: non-zero exit (1))"])
+
+    def test_process_pattern_avoids_hostname_match(self):
+        ps = ("  PID COMMAND\n 1084 avahi-daemon: running [wso2mi-01.local]\n"
+              " 3100 /usr/bin/java -Dcarbon.home=/opt/wso2mi-4.2.0 org.wso2.micro.integrator.bootstrap.Bootstrap\n")
+        ctx = {**self.APP_CTX, "service_name": "wso2mi", "process_pattern": "org.wso2."}
+        result = app_checks.check_process_service(FakeClient(lambda c, i: (ps, "", 0)), "EI", "ei1", BuiltinCommandSet(), ctx)
+        self.assertEqual(result.status, "OK")
+        self.assertEqual(result.check_name, "Bước 3 – Tiến trình wso2mi")
+        self.assertIn("PID 3100", result.message)
+        # MI đã dừng, chỉ còn avahi-daemon có hostname chứa 'wso2' → không được báo OK
+        only_avahi = "  PID COMMAND\n 1084 avahi-daemon: running [wso2mi-01.local]\n"
+        result = app_checks.check_process_service(FakeClient(lambda c, i: (only_avahi, "", 0)),
+                                                  "EI", "ei1", BuiltinCommandSet(), ctx)
         self.assertEqual(result.status, "CRITICAL")
 
     def test_active_exited_uses_process_pattern(self):

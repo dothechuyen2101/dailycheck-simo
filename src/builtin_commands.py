@@ -103,29 +103,74 @@ alter system archive log current;
 EXIT;
 """.strip()
 
+# SQL do DBA cung cấp: dung lượng tối đa tính MAXBYTES khi AUTOEXTEND, gồm cả TEMP (dba_temp_files).
+# Đã chỉnh: COUNT(*) (bản gửi qua chat bị mất dấu *), gv$temp_extent_pool để cộng TEMP của mọi instance RAC,
+# SET LINESIZE/NUMWIDTH để mỗi tablespace nằm trên 1 dòng và tiêu đề cột không bị cắt.
+# Parser tìm cột theo tên: TABLESPACE_NAME, TYPE, MAX_SIZE_GB, FREE_MAX_PCT.
 TABLESPACE_SQL = """
-SET PAGESIZE 1000 LINESIZE 200
-COLUMN pct_free FORMAT 999.99 HEADING "% Free"
-COLUMN name FORMAT A30 HEADING "Tablespace Name"
-COLUMN mbytes FORMAT 99999999 HEADING "Total MBytes"
-COLUMN used FORMAT 99999999 HEADING "Used Mbytes"
-COLUMN free FORMAT 99999999 HEADING "Free Mbytes"
+SET LINESIZE 300 PAGESIZE 1000 NUMWIDTH 16 TRIMOUT ON FEEDBACK OFF TAB OFF
+COLUMN tablespace_name FORMAT A30
+COLUMN type FORMAT A10
 SELECT
-  fs.tablespace_name name,
-  df.totalspace mbytes,
-  (df.totalspace - fs.freespace) used,
-  fs.freespace free,
-  100 * (fs.freespace / df.totalspace) pct_free
+    df.tablespace_name,
+    t.contents AS type,
+    df.datafile_count AS files,
+    ROUND(df.allocated_bytes / 1024 / 1024 / 1024, 2) AS allocated_gb,
+    ROUND((df.allocated_bytes - NVL(fs.free_bytes, 0)) / 1024 / 1024 / 1024, 2) AS used_gb,
+    ROUND(NVL(fs.free_bytes, 0) / 1024 / 1024 / 1024, 2) AS current_free_gb,
+    ROUND(df.max_bytes / 1024 / 1024 / 1024, 2) AS max_size_gb,
+    ROUND((df.max_bytes - (df.allocated_bytes - NVL(fs.free_bytes, 0))) / 1024 / 1024 / 1024, 2) AS max_free_gb,
+    ROUND(((df.allocated_bytes - NVL(fs.free_bytes, 0)) / df.max_bytes) * 100, 2) AS used_max_pct,
+    ROUND((1 - ((df.allocated_bytes - NVL(fs.free_bytes, 0)) / df.max_bytes)) * 100, 2) AS free_max_pct
 FROM
-  (SELECT tablespace_name, ROUND(SUM(bytes) / 1048576) TotalSpace
-   FROM dba_data_files GROUP BY tablespace_name) df,
-  (SELECT tablespace_name, ROUND(SUM(bytes) / 1048576) FreeSpace
-   FROM dba_free_space GROUP BY tablespace_name) fs
-WHERE df.tablespace_name = fs.tablespace_name(+);
+    (SELECT
+        tablespace_name,
+        COUNT(*) AS datafile_count,
+        SUM(bytes) AS allocated_bytes,
+        SUM(CASE WHEN autoextensible = 'YES' AND maxbytes > bytes THEN maxbytes ELSE bytes END) AS max_bytes
+     FROM dba_data_files
+     GROUP BY tablespace_name) df
+LEFT JOIN
+    (SELECT
+        tablespace_name,
+        SUM(bytes) AS free_bytes
+     FROM dba_free_space
+     GROUP BY tablespace_name) fs ON df.tablespace_name = fs.tablespace_name
+JOIN
+    dba_tablespaces t ON df.tablespace_name = t.tablespace_name
+UNION ALL
+SELECT
+    tf.tablespace_name,
+    'TEMPORARY' AS type,
+    tf.tempfile_count AS files,
+    ROUND(tf.allocated_bytes / 1024 / 1024 / 1024, 2) AS allocated_gb,
+    ROUND(NVL(tu.used_bytes, 0) / 1024 / 1024 / 1024, 2) AS used_gb,
+    ROUND((tf.allocated_bytes - NVL(tu.used_bytes, 0)) / 1024 / 1024 / 1024, 2) AS current_free_gb,
+    ROUND(tf.max_bytes / 1024 / 1024 / 1024, 2) AS max_size_gb,
+    ROUND((tf.max_bytes - NVL(tu.used_bytes, 0)) / 1024 / 1024 / 1024, 2) AS max_free_gb,
+    ROUND((NVL(tu.used_bytes, 0) / tf.max_bytes) * 100, 2) AS used_max_pct,
+    ROUND((1 - (NVL(tu.used_bytes, 0) / tf.max_bytes)) * 100, 2) AS free_max_pct
+FROM
+    (SELECT
+        tablespace_name,
+        COUNT(*) AS tempfile_count,
+        SUM(bytes) AS allocated_bytes,
+        SUM(CASE WHEN autoextensible = 'YES' AND maxbytes > bytes THEN maxbytes ELSE bytes END) AS max_bytes
+     FROM dba_temp_files
+     GROUP BY tablespace_name) tf
+LEFT JOIN
+    (SELECT
+        tablespace_name,
+        SUM(bytes_used) AS used_bytes
+     FROM gv$temp_extent_pool
+     GROUP BY tablespace_name) tu ON tf.tablespace_name = tu.tablespace_name
+ORDER BY
+    used_max_pct DESC;
 EXIT;
 """.strip()
 
 UNUSABLE_IDX_SQL = """
+SET LINESIZE 1000 TRIMOUT ON TAB OFF
 select ' alter index '||owner || '.' || index_name || ' rebuild ; '
   from dba_indexes where STATUS = 'UNUSABLE'
    union all
@@ -138,6 +183,7 @@ EXIT;
 """.strip()
 
 INVALID_OBJ_SQL = """
+SET LINESIZE 1000 TRIMOUT ON TAB OFF
 select 'ALTER ' || OBJECT_TYPE || ' ' ||
       OWNER || '.' || OBJECT_NAME || ' COMPILE;'
       from dba_objects
@@ -153,8 +199,10 @@ from v$asm_diskgroup;
 EXIT;
 """.strip()
 
+# Từ 12c background_dump_dest không còn trỏ tới thư mục alert log; thư mục thật là Diag Trace (ADR)
 ALERT_LOG_DEST_SQL = """
-show parameter background_dump_dest;
+SET HEADING OFF FEEDBACK OFF PAGESIZE 0 LINESIZE 1000 TRIMOUT ON
+select value from v$diag_info where name = 'Diag Trace';
 EXIT;
 """.strip()
 
@@ -289,8 +337,13 @@ BUILTIN_STEPS: tuple = (
         name="Bước 7 – Free Tablespace",
         commands=(BuiltinCommandDef("main", "sqlplus", SQLPLUS_SYSDBA, script=TABLESPACE_SQL, timeout_sec=90),),
         output_hint=(
-            "Mỗi dòng dữ liệu: TÊN TOTAL_MB USED_MB FREE_MB PCT_FREE (cột 2 và cột 5 là số). "
-            "So với thresholds.tablespace. " + SQL_ERROR_HINT
+            "Bảng SQL*Plus có dòng tiêu đề + dòng gạch ngang; cột được tìm theo tên: TABLESPACE_NAME, "
+            "FREE_MAX_PCT (hoặc USED_MAX_PCT / % Free), MAX_SIZE_GB (hoặc Max MBytes), TYPE (PERMANENT/UNDO/TEMPORARY). "
+            "SQL mặc định (của DBA) tính cả AUTOEXTEND: % free = (MAX − USED) / MAX. "
+            "Ngưỡng: SYSTEM/SYSAUX → system_min_free_pct; UNDO → chỉ kiểm tra dung lượng ≥ undotbs_min_total_mb; "
+            "TEMP → temp_min_free_pct (mặc định = default_min_free_pct); còn lại → default_min_free_pct. "
+            "Không đọc được dòng nào → ERROR. Dung lượng tự mở rộng còn phụ thuộc chỗ trống của ASM diskgroup (Bước 10). "
+            + SQL_ERROR_HINT
         ),
     ),
     BuiltinStepDef(
@@ -299,7 +352,7 @@ BUILTIN_STEPS: tuple = (
         name="Bước 8 – Unusable Indexes",
         commands=(BuiltinCommandDef("main", "sqlplus", SQLPLUS_SYSDBA, script=UNUSABLE_IDX_SQL, timeout_sec=120),),
         output_hint=(
-            "'no rows selected' → OK; mỗi dòng chứa 'alter index' tính là 1 index cần rebuild → WARNING. "
+            "'no rows selected' → OK; mỗi dòng bắt đầu bằng 'alter index' tính là 1 index cần rebuild → WARNING. "
             + SQL_ERROR_HINT
         ),
     ),
@@ -309,7 +362,7 @@ BUILTIN_STEPS: tuple = (
         name="Bước 9 – Invalid Objects",
         commands=(BuiltinCommandDef("main", "sqlplus", SQLPLUS_SYSDBA, script=INVALID_OBJ_SQL, timeout_sec=120),),
         output_hint=(
-            "'no rows selected' → OK; mỗi dòng chứa 'compile' tính là 1 object cần compile → WARNING. "
+            "'no rows selected' → OK; mỗi dòng dạng 'ALTER <loại> <owner.tên> COMPILE' tính là 1 object cần compile → WARNING. "
             + SQL_ERROR_HINT
         ),
     ),
@@ -341,7 +394,8 @@ BUILTIN_STEPS: tuple = (
             ),
         ),
         output_hint=(
-            "Lệnh 1: dòng chứa background_dump_dest, giá trị ở cột cuối → {{alert_dir}} "
+            "Lệnh 1: dòng đường dẫn (Diag Trace trong v$diag_info) → {{alert_dir}}; vẫn đọc được output cũ "
+            "của show parameter background_dump_dest "
             "(không lấy được thì dùng /u01/app/oracle/diag/rdbms/<db_unique_name>/<instance>/trace, "
             "db_unique_name lấy từ config hoặc tên instance bỏ số cuối). "
             "Lệnh 2: nội dung alert log; dòng chứa thresholds.alert_log_error_keywords "
@@ -376,7 +430,9 @@ BUILTIN_STEPS: tuple = (
         commands=(BuiltinCommandDef("main", "Liệt kê tiến trình", "ps -eo pid,args"),),
         output_hint=(
             "Dùng khi ứng dụng khai báo service_type: process (ứng dụng không chạy bằng systemd). "
-            "Mỗi dòng: PID DÒNG_LỆNH; có dòng lệnh chứa giá trị service → OK, không có → CRITICAL."
+            "Mỗi dòng: PID DÒNG_LỆNH; có dòng lệnh chứa process_pattern (mặc định = service) → OK, không có → CRITICAL. "
+            "Nên dùng chuỗi đặc trưng của tiến trình (vd. org.wso2.) – chuỗi ngắn như 'wso2' khớp cả hostname "
+            "trong dòng lệnh của tiến trình khác."
         ),
     ),
     BuiltinStepDef(
@@ -410,10 +466,17 @@ BUILTIN_STEPS: tuple = (
                 "service_ls", "Docker Swarm service",
                 r"docker service ls --format '{{.Name}}\t{{.Replicas}}'",
             ),
+            BuiltinCommandDef(
+                "service_ps", "Trạng thái task của service 0/N",
+                r"docker service ps {{swarm_service}} --no-trunc --format '{{.CurrentState}}\t{{.Error}}'",
+                optional=True, extra_vars=("swarm_service",),
+            ),
         ),
         output_hint=(
             "Lệnh 1: mỗi dòng TÊN<tab>STATUS, status không chứa 'Up' → WARNING. "
             "Lệnh 2: mỗi dòng TÊN<tab>REPLICAS (vd 2/2), thiếu replica → WARNING; lệnh lỗi (không phải Swarm) → bỏ qua. "
+            "Lệnh 3 (service 0/N): task gần nhất ở trạng thái Complete → service dạng job đã chạy xong, không cảnh báo; "
+            "trạng thái khác → WARNING kèm trạng thái và lỗi của task. "
             "Chỉ chạy khi ứng dụng có has_docker: true."
         ),
     ),
