@@ -199,8 +199,9 @@ def service_check(client, commands: BuiltinCommandSet, step_key: str, ctx: dict)
 
 
 def process_check(client, commands: BuiltinCommandSet, step_key: str, ctx: dict) -> CheckOutcome:
-    """Ứng dụng không chạy bằng systemd (service_type: process): tìm tiến trình có dòng lệnh chứa service_name."""
-    pattern = ctx.get("service_name", "")
+    """Ứng dụng không chạy bằng systemd (service_type: process): tìm tiến trình có dòng lệnh chứa
+    process_pattern (mặc định = service_name; service_name dùng làm tên hiển thị)."""
+    pattern = ctx.get("process_pattern") or ctx.get("service_name", "")
     res = commands.run(client, step_key, "main", ctx)
     if not res.success:
         return "ERROR", f"Lệnh {res.command} thất bại: {res.stderr[:200]}", "", {}

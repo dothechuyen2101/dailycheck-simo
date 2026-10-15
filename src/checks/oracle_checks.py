@@ -88,7 +88,7 @@ def parse_crs_issues(output: str, allowed_offline: List[str]) -> List[str]:
     # vì cột State details có khoảng trắng ("Instance Shutdown,STABLE") và Server có thể trống
     server_col = details_col = None
 
-    for line in output.splitlines():
+    for line in output.expandtabs(8).splitlines():
         stripped = line.strip()
         if stripped.startswith("Name ") and "Server" in line:
             server_col = line.index("Server")
@@ -235,6 +235,111 @@ def check_archive_switch(client: SSHClient, host_name: str, commands: BuiltinCom
 
 # ── Bước 7: Kiểm tra Free Tablespace ────────────────────────────────────────
 
+def parse_sqlplus_table(output: str) -> List[dict]:
+    """
+    Tách bảng SQL*Plus thành list {tiêu đề cột: giá trị}. Ranh giới cột lấy từ dòng gạch ngang
+    dưới tiêu đề (tiêu đề có thể nhiều từ như "% Free" hoặc bị SQL*Plus cắt theo độ rộng cột);
+    mỗi từ được gán vào cột mà nó nằm trong. Bỏ qua tiêu đề lặp lại sau mỗi trang.
+    SQL*Plus trên Unix mặc định SET TAB ON (thay khoảng trắng bằng TAB, mốc 8 ký tự) nên phải
+    expandtabs trước khi tính vị trí cột – hiển thị thì giống hệt nhưng vị trí ký tự bị lệch.
+    """
+    lines = output.expandtabs(8).splitlines()
+    dash_idx = next(
+        (i for i, line in enumerate(lines)
+         if i > 0 and line.strip() and set(line.strip()) <= {"-", " "} and " " in line.strip()),
+        None,
+    )
+    if dash_idx is None:
+        return []
+    spans = [(m.start(), m.end()) for m in re.finditer(r"-+", lines[dash_idx])]
+
+    def split(line: str) -> List[str]:
+        cells = [[] for _ in spans]
+        for m in re.finditer(r"\S+", line):
+            # cột có đoạn giao lớn nhất với từ; không giao thì lấy cột gần nhất
+            overlaps = [min(m.end(), b) - max(m.start(), a) for a, b in spans]
+            best = max(range(len(spans)), key=lambda k: (overlaps[k], -abs(spans[k][0] - m.start())))
+            cells[best].append(m.group(0))
+        return [" ".join(c) for c in cells]
+
+    header_line = lines[dash_idx - 1]
+    headers = split(header_line)
+    rows = []
+    for line in lines[dash_idx + 1:]:
+        stripped = line.strip()
+        if not stripped or stripped == header_line.strip() or set(stripped) <= {"-", " "}:
+            continue
+        rows.append(dict(zip(headers, split(line))))
+    return rows
+
+
+def _column(headers: List[str], *prefixes: str, exact: tuple = ()) -> Optional[str]:
+    for header in headers:
+        key = re.sub(r"[^A-Z]", "", header.upper())
+        if key in exact or any(key.startswith(p) for p in prefixes):
+            return header
+    return None
+
+
+def _number(value) -> Optional[float]:
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_tablespace_rows(output: str) -> List[dict]:
+    """
+    Đọc kết quả truy vấn tablespace → list {name, type, max_mb, pct_free}.
+    Cột được tìm theo tên tiêu đề nên dùng được cả SQL của DBA (TABLESPACE_NAME, TYPE, MAX_SIZE_GB,
+    FREE_MAX_PCT...) lẫn SQL cũ (Tablespace Name, Total/Max MBytes, % Free). Không có tiêu đề thì đọc
+    theo vị trí: TÊN TOTAL_MB USED FREE PCT_FREE.
+    """
+    rows = []
+    table = parse_sqlplus_table(output)
+    # Không có dòng tiêu đề (SET HEADING OFF): đọc theo vị trí TÊN TOTAL_MB USED FREE PCT_FREE
+    headers = list(table[0]) if table else []
+    name_col = _column(headers, "TABLESPACE", exact=("NAME",)) or (headers[0] if headers else None)
+    pct_free_col = _column(headers, "FREEMAX", "PCTFREE", "FREEPCT", exact=("FREE",))
+    pct_used_col = _column(headers, "USEDMAX", "PCTUSED", "USEDPCT")
+    size_col = _column(headers, "MAXSIZE", "MAXMB", "MAXGB", "TOTAL", exact=("MBYTES",))
+    type_col = _column(headers, "TYPE", "CONTENTS")
+    if table and not (name_col and (pct_free_col or pct_used_col)):
+        # Có bảng nhưng không thấy cột % free (vd. bản ghi bị SQL*Plus ngắt thành nhiều dòng vì LINESIZE nhỏ):
+        # không đoán theo vị trí để tránh đọc nhầm cột
+        return []
+    if table:
+        size_key = re.sub(r"[^A-Z]", "", (size_col or "").upper())
+        size_factor = 1 if "MB" in size_key else 1024  # cột GB (vd. MAX_SIZE_GB) → MB
+        for row in table:
+            if pct_free_col:
+                pct_free = _number(row.get(pct_free_col))
+            else:
+                used = _number(row.get(pct_used_col))
+                pct_free = None if used is None else 100 - used
+            ts_name = (row.get(name_col) or "").strip().upper()
+            if pct_free is None or not ts_name or " " in ts_name:
+                continue
+            size = _number(row.get(size_col)) if size_col else None
+            rows.append({
+                "name": ts_name,
+                "type": (row.get(type_col) or "").strip().upper() if type_col else "",
+                "max_mb": None if size is None else size * size_factor,
+                "pct_free": pct_free,
+            })
+        return rows
+
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        total_mb, pct_free = _number(parts[1]), _number(parts[4])
+        if total_mb is None or pct_free is None:
+            continue
+        rows.append({"name": parts[0].upper(), "type": "", "max_mb": total_mb, "pct_free": pct_free})
+    return rows
+
+
 def check_free_tablespace(client: SSHClient, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
     key = "oracle.free_tablespace"
     name = step_name(key)
@@ -242,6 +347,7 @@ def check_free_tablespace(client: SSHClient, host_name: str, commands: BuiltinCo
     sys_min_pct = thresholds.get("system_min_free_pct", 3)
     undo_min_mb = thresholds.get("undotbs_min_total_mb", 400)
     default_min_pct = thresholds.get("default_min_free_pct", 15)
+    temp_min_pct = thresholds.get("temp_min_free_pct", default_min_pct)
 
     res = commands.run(client, key, "main", ctx)
     output = res.stdout
@@ -250,34 +356,66 @@ def check_free_tablespace(client: SSHClient, host_name: str, commands: BuiltinCo
         return _err(host_name, name, f"Truy vấn tablespace thất bại: {failure}",
                     raw=f"{res.stdout}\n{res.stderr}".strip())
 
-    issues = []
-    for line in output.splitlines():
-        parts = line.split()
-        # Mỗi dòng dữ liệu có dạng: NAME  TOTAL  USED  FREE  PCT_FREE
-        if len(parts) < 5:
-            continue
-        ts_name = parts[0].upper()
-        try:
-            total_mb = float(parts[1].replace(",", ""))
-            pct_free = float(parts[4])
-        except ValueError:
-            continue
+    rows = parse_tablespace_rows(output)
+    if not rows:
+        # Không đọc được dòng nào thì không được báo OK (vd. SQL đổi thứ tự cột, dòng bị ngắt vì thiếu SET LINESIZE)
+        return _err(host_name, name,
+                    "Không đọc được dữ liệu tablespace từ output – SQL cần có cột tên tablespace và % free "
+                    "(vd. FREE_MAX_PCT), và SET LINESIZE đủ rộng để mỗi tablespace nằm trên 1 dòng",
+                    raw=output)
 
+    issues = []
+    for row in rows:
+        ts_name, ts_type, pct_free, max_mb = row["name"], row["type"], row["pct_free"], row["max_mb"]
         if ts_name in ("SYSTEM", "SYSAUX", "EXAMPLE"):
             if pct_free < sys_min_pct:
                 issues.append(f"{ts_name}: %Free={pct_free:.1f}% < {sys_min_pct}%")
-        elif ts_name.startswith("UNDOTBS"):
-            if total_mb < undo_min_mb:
-                issues.append(f"{ts_name}: Total={total_mb:.0f}MB < {undo_min_mb}MB")
-        else:
-            if pct_free < default_min_pct:
-                issues.append(f"{ts_name}: %Free={pct_free:.1f}% < {default_min_pct}%")
+        elif ts_type == "UNDO" or (not ts_type and ts_name.startswith("UNDOTBS")):
+            # % free của UNDO không có ý nghĩa (extent hết hạn vẫn tính là đã dùng) – chỉ kiểm tra dung lượng
+            if max_mb is not None and max_mb < undo_min_mb:
+                issues.append(f"{ts_name}: Total={max_mb:.0f}MB < {undo_min_mb}MB")
+        elif ts_type == "TEMPORARY":
+            if pct_free < temp_min_pct:
+                issues.append(f"{ts_name}: %Free={pct_free:.1f}% < {temp_min_pct}%")
+        elif pct_free < default_min_pct:
+            issues.append(f"{ts_name}: %Free={pct_free:.1f}% < {default_min_pct}%")
 
     if issues:
         return _crit(host_name, name,
                      f"Tablespace vượt ngưỡng: {'; '.join(issues)}",
                      raw=output, details={"issues": issues})
-    return _ok(host_name, name, "Tất cả tablespace đều đạt ngưỡng", raw=output)
+    return _ok(host_name, name, f"Tất cả {len(rows)} tablespace đều đạt ngưỡng", raw=output)
+
+
+def _sql_statements(output: str, pattern: str) -> List[str]:
+    """
+    Các dòng dữ liệu bắt đầu bằng câu lệnh ALTER (trả về phần khớp group 1).
+    Không đếm dòng tiêu đề cột SQL*Plus in ra (vd. 'ALTER'||OBJECT_TYPE||...||'COMPILE;'),
+    vì dòng đó bắt đầu bằng dấu nháy, và tiêu đề lặp lại sau mỗi trang.
+    """
+    regex = re.compile(rf"^{pattern}", re.IGNORECASE)
+    lines = output.splitlines()
+    found = []
+    i = 0
+    while i < len(lines):
+        stmt = lines[i].lstrip()
+        if stmt.lower().startswith("alter "):
+            # SQL*Plus ngắt dòng đúng tại LINESIZE (kể cả giữa tên object): ghép nguyên văn các dòng
+            # tiếp nối cho tới khi câu lệnh kết thúc bằng ";"
+            while (not stmt.rstrip().endswith(";") and i + 1 < len(lines) and lines[i + 1].strip()
+                   and not lines[i + 1].lstrip().lower().startswith("alter ")):
+                i += 1
+                stmt += lines[i]
+            m = regex.match(stmt.strip())
+            if m:
+                found.append(m.group(1))
+        i += 1
+    return found
+
+
+def _preview(items: List[str], limit: int = 3) -> str:
+    more = f" (+{len(items) - limit})" if len(items) > limit else ""
+    return ", ".join(items[:limit]) + more
 
 
 # ── Bước 8: Kiểm tra Unusable Indexes ───────────────────────────────────────
@@ -294,11 +432,11 @@ def check_unusable_indexes(client: SSHClient, host_name: str, commands: BuiltinC
     if "no rows selected" in output.lower():
         return _ok(host_name, name, "Không có unusable index – no rows selected", raw=output)
     # Đếm số index cần rebuild
-    rebuild_stmts = [l for l in output.splitlines() if "alter index" in l.lower()]
+    rebuild_stmts = _sql_statements(output, r"alter\s+index\s+(\S+)")
     if rebuild_stmts:
         return _warn(host_name, name,
-                     f"Phát hiện {len(rebuild_stmts)} unusable index cần rebuild",
-                     raw=output, details={"count": len(rebuild_stmts)})
+                     f"Phát hiện {len(rebuild_stmts)} unusable index cần rebuild: {_preview(rebuild_stmts)}",
+                     raw=output, details={"count": len(rebuild_stmts), "objects": rebuild_stmts})
     return _ok(host_name, name, "Không có unusable index", raw=output)
 
 
@@ -315,11 +453,11 @@ def check_invalid_objects(client: SSHClient, host_name: str, commands: BuiltinCo
                     raw=f"{res.stdout}\n{res.stderr}".strip())
     if "no rows selected" in output.lower():
         return _ok(host_name, name, "Không có invalid object – no rows selected", raw=output)
-    compile_stmts = [l for l in output.splitlines() if "compile" in l.lower()]
+    compile_stmts = _sql_statements(output, r"alter\s+(.+?)\s+compile\b")
     if compile_stmts:
         return _warn(host_name, name,
-                     f"Phát hiện {len(compile_stmts)} invalid object cần compile",
-                     raw=output, details={"count": len(compile_stmts)})
+                     f"Phát hiện {len(compile_stmts)} invalid object cần compile: {_preview(compile_stmts)}",
+                     raw=output, details={"count": len(compile_stmts), "objects": compile_stmts})
     return _ok(host_name, name, "Không có invalid object", raw=output)
 
 
@@ -358,6 +496,33 @@ def check_asm_diskgroup(client: SSHClient, host_name: str, commands: BuiltinComm
 
 # ── Bước 11: Kiểm tra Alert Log ──────────────────────────────────────────────
 
+def parse_alert_dir(output: str) -> Optional[str]:
+    """
+    Thư mục chứa alert log từ output sqlplus:
+    - mặc định: `select value from v$diag_info where name = 'Diag Trace'` → một dòng đường dẫn;
+    - lệnh cũ `show parameter background_dump_dest`: SQL*Plus ngắt cột VALUE sau 30 ký tự
+      nên phải ghép các dòng tiếp nối.
+    """
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        if "background_dump_dest" in line.lower():
+            parts = line.split()
+            if len(parts) < 3:
+                return None
+            value = parts[-1]
+            for nxt in lines[i + 1:]:
+                if nxt[:1].isspace() and len(nxt.split()) == 1:
+                    value += nxt.strip()
+                else:
+                    break
+            return value
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("/") and " " not in stripped:
+            return stripped
+    return None
+
+
 def check_alert_log(client: SSHClient, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
     key = "oracle.alert_log"
     name = step_name(key)
@@ -365,15 +530,9 @@ def check_alert_log(client: SSHClient, host_name: str, commands: BuiltinCommandS
     ignore = get("thresholds.alert_log_ignore_keywords", []) or []
     instance_name = ctx["instance"]
 
-    # Lấy đường dẫn alert log qua sqlplus
+    # Lấy thư mục alert log qua sqlplus
     res_path = commands.run(client, key, "dest", ctx)
-    alert_dir = None
-    for line in res_path.stdout.splitlines():
-        if "background_dump_dest" in line.lower():
-            parts = line.split()
-            if len(parts) >= 3:
-                alert_dir = parts[-1].strip()
-                break
+    alert_dir = parse_alert_dir(res_path.stdout) if res_path.success else None
 
     if not alert_dir:
         # Fallback theo cấu trúc ADR: diag/rdbms/<db_unique_name>/<instance>/trace.

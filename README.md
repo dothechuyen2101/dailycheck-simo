@@ -197,8 +197,9 @@ applications:
         ip: "10.1.46.42"
         service: ""           # service/service_type ở host ghi đè giá trị của ứng dụng; "" = bỏ Bước 3 trên host này
   - name: "WSO2 EI Cluster"
-    service: "wso2"
+    service: "wso2mi"               # tên hiển thị
     service_type: "process"
+    process_pattern: "org.wso2."    # chuỗi tìm trong dòng lệnh; tránh chuỗi ngắn như "wso2" (khớp cả hostname)
   - name: "WSO2 APIM Cluster"
     service: "wso2am-3.2.0.service"
     process_pattern: "org.wso2.carbon.bootstrap.Bootstrap"  # (tuỳ chọn) tiến trình cần tìm khi unit ở trạng thái active (exited)
@@ -215,6 +216,7 @@ thresholds:
     system_min_free_pct: 3   # SYSTEM/SYSAUX >= 3% free
     undotbs_min_total_mb: 400 # UNDOTBS >= 400MB total
     default_min_free_pct: 15 # Tablespace khác >= 15% free
+    temp_min_free_pct: 15    # (tuỳ chọn) TEMP, mặc định = default_min_free_pct
   disk_exclude_mounts:       # (tuỳ chọn) mount không kiểm tra (kể cả mount con)
     - "/mailbox"
   alert_log_ignore_keywords: # (tuỳ chọn) bỏ qua dòng alert log chứa các chuỗi này
@@ -277,7 +279,7 @@ Lệnh Oracle mặc định (SSH bằng root, Oracle 19c):
 | 5 – Voting disk | `{{grid_home}}/bin/crsctl query css votedisk` |
 | 6–11 (sqlplus) | `su - {{oracle_user}} -c "export ORACLE_HOME={{oracle_home}} ORACLE_SID={{instance}}; {{oracle_home}}/bin/sqlplus -S / as sysdba"`, SQL gửi qua stdin |
 | 10 – ASM | truy vấn `v$asm_diskgroup` từ instance DB (không cần user grid / sysasm) |
-| 11 – Alert log | `tail -1000 {{alert_dir}}/alert_{{instance}}.log` |
+| 11 – Alert log | thư mục lấy từ `v$diag_info` (Diag Trace), rồi `tail -1000 {{alert_dir}}/alert_{{instance}}.log` |
 
 `{{grid_home}}`, `{{oracle_home}}`, `{{oracle_user}}` lấy từ config (`oracle.grid_home`, `oracle.oracle_home`, `oracle.oracle_user`); không khai báo thì bước **Dò môi trường Oracle** tự tìm trên node DB: grid home từ tiến trình `.../bin/ocssd.bin` (hoặc dòng `+ASM` trong `/etc/oratab`), ORACLE_HOME từ dòng của database trong `/etc/oratab` hoặc (khi không có oratab, như trên AIX) từ thuộc tính `ORACLE_HOME` của resource database trong `crsctl stat res -p`, user từ tiến trình `ora_pmon_<instance>`. Không tìm được thì các bước cần giá trị đó báo ERROR và chỉ rõ key cần khai báo.
 

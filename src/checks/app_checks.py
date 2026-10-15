@@ -112,6 +112,22 @@ def check_docker_service(client, system: str, host_name: str, commands: BuiltinC
                raw=res_ps.stdout)
 
 
+def _latest_task_state(client, commands: BuiltinCommandSet, key: str, ctx: dict, svc_name: str) -> str:
+    """Trạng thái (và lỗi nếu có) của task gần nhất của Swarm service, vd. 'Complete 2 weeks ago'."""
+    if not commands.has_command(key, "service_ps"):
+        return ""
+    res = commands.run(client, key, "service_ps", {**ctx, "swarm_service": svc_name})
+    if not res.success:
+        return ""
+    for line in res.stdout.splitlines():
+        parts = line.split("\t", 1)
+        current = parts[0].strip()
+        if current:
+            error = parts[1].strip() if len(parts) > 1 else ""
+            return f"{current} ({error})" if error else current
+    return ""
+
+
 def check_docker_containers(client, system: str, host_name: str, commands: BuiltinCommandSet, ctx: dict) -> CheckResult:
     """Kiểm tra Docker containers – tất cả phải running."""
     key = "application.docker"
@@ -131,7 +147,7 @@ def check_docker_containers(client, system: str, host_name: str, commands: Built
 
     # Kiểm tra tổng số replica qua docker service ls nếu có Swarm
     res_svc = commands.run(client, key, "service_ls", ctx)
-    svc_issues = []
+    svc_issues, completed_jobs = [], []
     if res_svc.success:
         for line in res_svc.stdout.splitlines():
             parts = _split_two_columns(line)
@@ -140,16 +156,24 @@ def check_docker_containers(client, system: str, host_name: str, commands: Built
             svc_name, replicas = parts[0], parts[1]
             # Replica format: "2/2" – nếu không đủ thì cảnh báo
             m = re.match(r"(\d+)/(\d+)", replicas)
-            if m and m.group(1) != m.group(2):
-                svc_issues.append(f"{svc_name}: {replicas}")
+            if not m or m.group(1) == m.group(2):
+                continue
+            state = _latest_task_state(client, commands, key, ctx, svc_name) if m.group(1) == "0" else ""
+            if state.lower().startswith("complete"):
+                # Service dạng job (restart_policy: none) đã chạy xong – 0/N là bình thường
+                completed_jobs.append(f"{svc_name} ({state})")
+            else:
+                svc_issues.append(f"{svc_name}: {replicas}" + (f" – task: {state}" if state else ""))
 
     issues = not_running + svc_issues
+    jobs_note = f"; service dạng job đã chạy xong: {', '.join(completed_jobs)}" if completed_jobs else ""
     if issues:
         return _warn(system, host_name, name,
-                     f"Docker issues: {', '.join(issues)}",
-                     raw=output, details={"issues": issues})
+                     f"Docker issues: {', '.join(issues)}{jobs_note}",
+                     raw=output, details={"issues": issues, "completed_jobs": completed_jobs})
     return _ok(system, host_name, name,
-               "Tất cả Docker container đang chạy", raw=output)
+               f"Tất cả Docker container đang chạy{jobs_note}", raw=output,
+               details={"completed_jobs": completed_jobs} if completed_jobs else None)
 
 
 SERVICE_CHECKS = {

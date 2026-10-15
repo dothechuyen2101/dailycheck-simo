@@ -353,6 +353,9 @@ ps -eo user,args | grep -E "ocssd.bin|ora_pmon" | grep -v grep
 **Các điểm cần biết khi đọc kết quả Oracle:**
 - Bước 3: slot không được gán server (vd. slot 3 của `ora.asmgroup` trên cụm 2 node – Flex ASM 19c mặc định cardinality 3) không bị tính là lỗi khi resource đã ONLINE trên đủ số node.
 - Bước 5: diskgroup dùng EXTERNAL redundancy chỉ có 1 voting disk (NORMAL: 3, HIGH: 5); khi đó chỉnh `thresholds.voting_disk_required` cho khớp thiết kế.
+- Bước 7: SQL mặc định là SQL do DBA cung cấp – % free tính trên dung lượng tối đa (datafile bật AUTOEXTEND tính theo `MAXBYTES`), có cả tablespace TEMP. Parser tìm cột theo tên tiêu đề (`TABLESPACE_NAME`, `TYPE`, `MAX_SIZE_GB`, `FREE_MAX_PCT`), nên khi sửa SQL trên dashboard chỉ cần giữ các cột đó và `SET LINESIZE` đủ rộng; không đọc được dòng nào thì bước báo ERROR. UNDO chỉ kiểm tra dung lượng (`undotbs_min_total_mb`), TEMP dùng `thresholds.tablespace.temp_min_free_pct` (mặc định = `default_min_free_pct`). Phần tự mở rộng chỉ dùng được khi ASM diskgroup còn chỗ (xem Bước 10).
+- Bước 8, 9: chỉ đếm dòng bắt đầu bằng `ALTER ...` (không đếm dòng tiêu đề cột của SQL*Plus), câu lệnh bị SQL*Plus ngắt dòng vì tên object dài được ghép lại; báo cáo liệt kê tối đa 3 object đầu tiên, raw output có đủ danh sách.
+- Bước 11: thư mục alert log lấy từ `v$diag_info` (Diag Trace). Từ 12c, `background_dump_dest` không còn trỏ tới thư mục alert log.
 
 #### 6. Cấu hình MongoDB
 
@@ -427,10 +430,10 @@ applications:
 
 **Các khoá:**
 - `service`: tên service kiểm tra ở Bước 3. Để trống thì bỏ Bước 3.
-- `service_type`: `systemd` (mặc định) chạy `systemctl status`; `docker` kiểm tra Docker Swarm service – trên Swarm manager so số replica (0/N → CRITICAL, thiếu → WARNING), trên node worker kiểm tra container của service đang chạy trên node; `process` dành cho ứng dụng không chạy bằng systemd (vd. WSO2 MI khởi động bằng script) – có tiến trình mà dòng lệnh chứa giá trị `service` thì OK, không có thì CRITICAL.
-- `process_pattern` (tuỳ chọn): chuỗi cần tìm trong dòng lệnh tiến trình khi unit systemd ở trạng thái `active (exited)`; mặc định là tên service bỏ `.service`.
+- `service_type`: `systemd` (mặc định) chạy `systemctl status`; `docker` kiểm tra Docker Swarm service – trên Swarm manager so số replica (0/N → CRITICAL, thiếu → WARNING), trên node worker kiểm tra container của service đang chạy trên node; `process` dành cho ứng dụng không chạy bằng systemd (vd. WSO2 MI khởi động bằng script) – có tiến trình mà dòng lệnh chứa `process_pattern` (mặc định = `service`) thì OK, không có thì CRITICAL.
+- `process_pattern` (tuỳ chọn): chuỗi cần tìm trong dòng lệnh tiến trình – với `service_type: process`, và khi unit systemd ở trạng thái `active (exited)` (mặc định là tên service bỏ `.service`). Dùng chuỗi đặc trưng của tiến trình, vd. `org.wso2.` cho WSO2; chuỗi ngắn như `wso2` khớp nhầm `avahi-daemon: running [wso2mi-01.local]` vì hostname chứa `wso2`.
 - `service`, `service_type` khai báo trong từng host sẽ ghi đè giá trị của ứng dụng.
-- `has_docker`: thêm Bước 3b – mọi container phải ở trạng thái Up, Swarm service phải đủ replica.
+- `has_docker`: thêm Bước 3b – mọi container phải ở trạng thái Up, Swarm service phải đủ replica. Service đang 0/N thì xem task gần nhất (`docker service ps`): `Complete` nghĩa là service dạng job đã chạy xong – không cảnh báo; trạng thái khác (Failed, Rejected...) → WARNING kèm lỗi của task.
 - Nếu Bước 3 báo "Không tìm thấy service ... trên host", tên service trong config không đúng. Báo cáo liệt kê các unit có tên gần giống; có thể xem thêm bằng `systemctl list-unit-files --type=service | grep -i <từ khoá>`.
 - Unit ở trạng thái `active (exited)` (unit chỉ chạy script khởi động rồi thoát): hệ thống tìm tiến trình chứa `process_pattern` (mặc định tên service bỏ `.service`) trong `ps -eo pid,args`; có thì OK, không thì WARNING.
 - Với `service_type: docker`, node worker không chạy container nào của service vẫn là OK (Swarm tự phân bổ replica); số replica được kiểm tra trên node manager, nên cần có ít nhất 1 node manager trong danh sách host.
